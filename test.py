@@ -22,6 +22,8 @@ ENDC      = '\033[0m'
 BOLD      = '\033[1m'
 UNDERLINE = '\033[4m'
 
+FNULL = open(os.devnull, 'w')
+
 exe = '_build/default/src/main.exe'
 passed, tot = 0, 0
 
@@ -41,7 +43,7 @@ def test_goods(path):
         try:
             out = subprocess \
                 .check_output([exe, "{}{}".format(path, test)],
-                              stderr='/dev/null') \
+                              stderr=FNULL) \
                 .decode('utf-8')
             passed += 1
 
@@ -69,7 +71,7 @@ def test_bad(path):
         try:
             out = subprocess \
                 .check_output([exe, "{}{}".format(path, test)],
-                              stderr='/dev/null') \
+                              stderr=FNULL) \
                 .decode('utf-8')
 
             print("{}[x]{} {:<{a}}: Failed."

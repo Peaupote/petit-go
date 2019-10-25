@@ -7,11 +7,17 @@
     (* true of insert semicolon on new line *)
     let is_semi = ref false
 
+    let eol f lexbuf =
+      Lexing.new_line lexbuf;
+      if !is_semi
+      then begin is_semi := false; SEMI end
+      else f lexbuf
+
     let tok t =
       let _ =
         match t with
         | IDENT _ | INT _ | STRING _ | TRUE | FALSE
-          | NIL | RETURN | INCR | DECR | LPAR | END ->
+          | NIL | RETURN | INCR | DECR | RPAR | END ->
            is_semi := true
         | _       -> is_semi := false
       in
@@ -47,12 +53,9 @@ let string      = '"' char* '"'
 
 rule token = parse
 | blank         { token lexbuf }
-| new_line      { Lexing.new_line lexbuf;
-                  if !is_semi
-                  then begin is_semi := false; SEMI end
-                  else token lexbuf }
-| "/*"          { is_semi := false; comment lexbuf }
-| "//"          { is_semi := false; comment_line lexbuf }
+| new_line      { eol token lexbuf }
+| "/*"          { comment lexbuf }
+| "//"          { comment_line lexbuf }
 | "{"           { tok BEGIN }
 | "}"           { tok END }
 | "("           { tok LPAR }
@@ -79,9 +82,8 @@ rule token = parse
 | "||"          { tok OR }
 | "++"          { tok INCR }
 | "--"          { tok DECR }
-| "*"           { tok STAR }
 | string  as s  { STRING s |> tok }
-| integer as i  { INT (int_of_string i) |> tok }
+| integer as i  { INT (Int64.of_string i) |> tok }
 | ident   as id { let t =
                     try Hashtbl.find keywords id
                     with Not_found -> IDENT id
@@ -91,11 +93,11 @@ rule token = parse
 
 and comment = parse
 | "*/"     { token lexbuf }
-| new_line { Lexing.new_line lexbuf; comment lexbuf }
+| new_line { eol comment lexbuf }
 | _        { comment lexbuf }
 | eof      { lexing_error "Unclosed comment." }
 
 and comment_line = parse
-| new_line { Lexing.new_line lexbuf; token lexbuf }
+| new_line { eol token lexbuf }
 | _        { comment_line lexbuf }
 | eof      { EOF }

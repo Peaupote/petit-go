@@ -8,7 +8,7 @@ type var = ty * ident
 
 type binop =
   | Add | Sub | Mul | Div | Mod
-  | Eq | Neq | Lt | Leq | Gt | Geq
+  | Eq  | Neq | Lt  | Leq | Gt | Geq
   | And | Or
 
 type unop  = Not | Deref | Ref
@@ -16,9 +16,10 @@ type unop  = Not | Deref | Ref
 type expr =
   ENil
 | Eident  of string
-| Eint    of int
+| Eint    of int64
 | Estring of string
 | Ebool   of bool
+| Etuple  of expr list
 | Eattr   of expr * ident
 | Ecall   of ident * (expr list)
 | Eunop   of unop * expr
@@ -27,7 +28,8 @@ type expr =
 type side = Incr | Decr
 
 type instruction =
-  Iexpr   of expr
+  Inop
+| Iexpr   of expr
 | Iside   of expr * side
 | Iasgn   of expr * expr
 | Iblock  of instruction list
@@ -44,7 +46,7 @@ type func_t = {
     name : ident;
     params : var list;
     return : ty list;
-    body : instruction list }
+    body : instruction }
 
 type decl =
   Dstruct of struct_t

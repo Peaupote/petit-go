@@ -1,5 +1,11 @@
 %{
     open Ast
+
+    let tuple lst =
+      match lst with
+      | x :: [] -> x
+      | _ -> Etuple lst
+
 %}
 
 %token EOF
@@ -7,17 +13,16 @@
 %token BEQ NEQ LT GT LEQ GEQ PLUS MINUS DIV MOD AND OR
 %token ELSE IMPORT TRUE FALSE NIL TYPE AMP INCR DECR
 %token FOR PACKAGE VAR FUNC RETURN IF STRUCT
-%token <int> INT
+%token <int64> INT
 %token <Ast.ident> IDENT
 %token <string> STRING
-%token <char> CHAR
 
-%nonassoc IDENT
 %nonassoc COMMA
+%nonassoc IDENT
 
 %nonassoc MOD
-%left DOT EQ LT LEQ GT GEQ NEQ
-%right NOT AMP
+%left DOT BEQ LT LEQ GT GEQ NEQ
+%right NOT AMP AND OR
 %left PLUS MINUS
 %left STAR DIV
 
@@ -64,7 +69,7 @@ structure:
 
 func:
   FUNC name = IDENT
-  LPAR params = separated_list(COMMA, vars) RPAR
+  LPAR params = lblock(COMMA, RPAR, vars)
   ret = loption(return_ty)
   body = block SEMI
     { { name = name;
@@ -89,57 +94,55 @@ vars:
 ;
 
 block:
-  BEGIN is = lblock(SEMI, END, instr) { is }
+  BEGIN is = lblock(SEMI, END, instr) { Iblock is }
 ;
 
 instr:
   s = instr_simple { s }
-| b = block        { Iblock b }
+| i = instr_if     { i }
+| b = block        { b }
 | VAR ids = separated_nonempty_list(COMMA, IDENT) t = ty?
   vs = loption(rvalue)
     {
-      let code =
-        match vs with
-        | [] -> List.fold_left (fun acc id -> (Idecl (id, t)) :: acc) [] ids
-        | _  ->
-           try
-             List.fold_left2
-               (fun acc id v ->
-                 (Idecl (id, t)) :: (Iasgn (Eident id, v)) :: acc)
-               [] ids vs
-           with Invalid_argument _ -> raise Error
-      in
-      Iblock code
+      let declarations = List.map (fun id -> Idecl (id, t)) ids in
+      match vs with
+      | [] -> Iblock declarations
+      | _  ->
+         let ids = List.map (fun id -> Eident id) ids in
+         Iblock (declarations @ [Iasgn (Etuple ids, Etuple vs)])
     }
+| FOR b = block { Ifor (Ebool true, b) }
+| FOR e = expr b = block { Ifor (e, b) }
+| FOR i1 = instr_simple? SEMI
+      e  = expr SEMI
+      i2 = instr_simple?
+      b = block
+            { match i1, i2 with
+              | None, None -> Ifor (e, b)
+              | Some i, None -> Iblock [i; Ifor (e, b)]
+              | None, Some i -> Ifor (e, Iblock [b; i])
+              | Some i1, Some i2 -> Iblock [i1; Ifor (e, Iblock [b; i2])] }
 ;
 
 instr_simple:
   e = expr { Iexpr e }
-| e = expr PLUS PLUS { Iside (e, Incr) }
-| e = expr MINUS MINUS { Iside (e, Decr) }
+| e = expr INCR { Iside (e, Incr) }
+| e = expr DECR { Iside (e, Decr) }
 | e1 = separated_nonempty_list(COMMA, expr) e2 = rvalue
-    {
-      let code =
-        try
-          List.fold_left2
-            (fun acc el er -> (Iasgn (el, er)) :: acc)
-            [] e1 e2
-        with Invalid_argument _ -> raise Error
-      in
-      Iblock code
-    }
+     { Iasgn (tuple e1, tuple e2) }
+
+(* problem here *)
 | ids = separated_nonempty_list(COMMA, IDENT)
   CEQ es = separated_nonempty_list(COMMA, expr)
-    {
-      let code =
-        try
-          List.fold_left2
-            (fun acc id e -> (Iasgn ((Eident id), e)) :: acc)
-            [] ids es
-        with Invalid_argument _ -> raise Error
-      in
-      Iblock code
-    }
+    { let ident_lst = List.map (fun id -> Eident id) ids in
+      Iasgn (tuple ident_lst, tuple es) }
+| RETURN es = separated_list(COMMA, expr) { Ireturn (tuple es) }
+;
+
+instr_if:
+  IF e = expr b = block { Iif (e, b, Inop) }
+| IF e = expr b1 = block ELSE b2 = instr_if { Iif (e, b1, b2) }
+| IF e = expr b1 = block ELSE b2 = block { Iif (e, b1, b2) }
 ;
 
 rvalue:
@@ -147,12 +150,12 @@ rvalue:
 ;
 
 expr:
-  i = INT { Eint i }
+  i = INT    { Eint i }
 | s = STRING { Estring s }
-| i = IDENT { Eident i }
-| TRUE { Ebool true }
-| FALSE { Ebool false }
-| NIL { ENil }
+| i = IDENT  { Eident i }
+| TRUE       { Ebool true }
+| FALSE      { Ebool false }
+| NIL        { ENil }
 | LPAR e = expr RPAR { e }
 | e = expr DOT i = IDENT { Eattr (e, i) }
 | f = IDENT LPAR es = separated_list(COMMA, expr) RPAR { Ecall (f, es) }
@@ -172,10 +175,12 @@ expr:
 | STAR  { Mul }
 | DIV   { Div }
 | MOD   { Mod }
-| EQ    { Eq }
+| BEQ   { Eq }
 | NEQ   { Neq }
 | LT    { Lt }
 | LEQ   { Leq }
 | GT    { Gt }
 | GEQ   { Geq }
+| AND   { And }
+| OR    { Or }
 ;
