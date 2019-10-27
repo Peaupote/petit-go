@@ -1,7 +1,7 @@
 (ocamllex
     (modules lexer))
 (menhir
-    (flags -v --trace)
+    (flags -v)
     (modules parser))
 (executable
     (name main))

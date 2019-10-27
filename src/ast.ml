@@ -1,65 +1,72 @@
 type ident = string
 
-and ty =
-  | Tstruct of string
-  | Tref    of string
-
-type var = ty * ident
-
 type binop =
   | Add | Sub | Mul | Div | Mod
   | Eq  | Neq | Lt  | Leq | Gt | Geq
   | And | Or
 
 type unop  = Not | Deref | Ref
+type side = Incr | Decr
+type position = Lexing.position * Lexing.position
 
-type expr =
-  ENil
+type 'a loc =
+  { v : 'a;
+    position : position }
+
+and ty =
+  | Tstruct of string loc
+  | Tref    of string loc
+
+and var = ty loc * ident loc
+
+and expr =
+  Enil
 | Eident  of string
 | Eint    of int64
 | Estring of string
 | Ebool   of bool
-| Etuple  of expr list
-| Eattr   of expr * ident
-| Ecall   of ident * (expr list)
-| Eunop   of unop * expr
-| Ebinop  of binop * expr * expr
+| Etuple  of expr loc list
+| Eattr   of expr loc * ident
+| Ecall   of expr loc * (expr loc list)
+| Eunop   of unop * expr loc
+| Ebinop  of binop * expr loc * expr loc
 
-type side = Incr | Decr
-
-type instruction =
+and instruction =
   Inop
-| Iexpr   of expr
-| Iside   of expr * side
-| Iasgn   of expr * expr
+| Iexpr   of expr loc
+| Iside   of expr loc * side
+| Iasgn   of expr loc * expr loc
 | Iblock  of instruction list
-| Idecl   of ident * ty option
-| Ireturn of expr
-| Ifor    of expr * instruction
-| Iif     of expr * instruction * instruction
+| Idecl   of ident loc * ty loc option
+| Ireturn of expr loc
+| Ifor    of expr loc * instruction
+| Iif     of expr loc * instruction * instruction
 
-type struct_t = {
-    name : ident;
-    body : var list }
+and struct_t = {
+    s_name : ident loc;
+    s_body : var list; }
 
-type func_t = {
-    name : ident;
-    params : var list;
-    return : ty list;
-    body : instruction }
+and func_t = {
+    f_name   : ident loc;
+    f_params : var list;
+    f_return : ty loc list;
+    f_body   : instruction; }
 
-type decl =
-  Dstruct of struct_t
-| Dfunc   of func_t
+and decl =
+  Dstruct of struct_t loc
+| Dfunc   of func_t loc
 
 type package = {
-    name : string;
-    imports : string list;
-    structures : struct_t list;
-    functions : func_t list }
+    p_name       : string loc;
+    p_imports    : string loc list;
+    p_structures : struct_t loc list;
+    p_functions  : func_t loc list }
 
 let empty_pkg name imports = {
-    name = name;
-    imports = imports;
-    structures = [];
-    functions = [] }
+    p_name       = name;
+    p_imports    = imports;
+    p_structures = [];
+    p_functions  = [] }
+
+module Prog = Map.Make(struct type t = string
+                              let compare = compare end)

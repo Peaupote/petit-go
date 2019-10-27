@@ -4,7 +4,7 @@
     exception Lexing_error of string
     let lexing_error msg = raise (Lexing_error msg)
 
-    (* true of insert semicolon on new line *)
+    (* true if insert semicolon on new line *)
     let is_semi = ref false
 
     let eol f lexbuf =
@@ -83,7 +83,9 @@ rule token = parse
 | "++"          { tok INCR }
 | "--"          { tok DECR }
 | string  as s  { STRING s |> tok }
-| integer as i  { INT (Int64.of_string i) |> tok }
+| integer as i  { try INT (Int64.of_string i) |> tok
+                  with Failure _ ->
+                    lexing_error (i ^ " is too big for 64-bit integer") }
 | ident   as id { let t =
                     try Hashtbl.find keywords id
                     with Not_found -> IDENT id
@@ -95,7 +97,7 @@ and comment = parse
 | "*/"     { token lexbuf }
 | new_line { eol comment lexbuf }
 | _        { comment lexbuf }
-| eof      { lexing_error "Unclosed comment." }
+| eof      { lexing_error "Unclosed comment" }
 
 and comment_line = parse
 | new_line { eol token lexbuf }
