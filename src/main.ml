@@ -49,6 +49,8 @@ let compile file =
     packages := Prog.add pkg.p_name.v pkg !packages;
 
     close_in f;
+
+    Fmt.save "rev_compiled.go" !packages
   with
   | Lexer.Lexing_error msg ->
      localisation (Lexing.lexeme_start_p buf);

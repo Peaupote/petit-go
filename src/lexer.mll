@@ -82,7 +82,7 @@ rule token = parse
 | "||"          { tok OR }
 | "++"          { tok INCR }
 | "--"          { tok DECR }
-| string  as s  { STRING s |> tok }
+| string  as s  { STRING (String.sub s 1 (String.length s - 2)) |> tok }
 | integer as i  { try INT (Int64.of_string i) |> tok
                   with Failure _ ->
                     lexing_error (i ^ " is too big for 64-bit integer") }

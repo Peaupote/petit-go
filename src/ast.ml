@@ -26,7 +26,7 @@ and expr =
 | Estring of string
 | Ebool   of bool
 | Etuple  of expr loc list
-| Eattr   of expr loc * ident
+| Eattr   of expr loc * ident loc
 | Ecall   of expr loc * (expr loc list)
 | Eunop   of unop * expr loc
 | Ebinop  of binop * expr loc * expr loc
