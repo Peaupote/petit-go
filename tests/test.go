@@ -8,4 +8,8 @@ func main(x, y int) (int, Y) {
 	x3 := x1 > x2 || x1 == x2 || x < 1
 	x4 := f.g.h(x1)
 	x5 := a == b == c
+
+	for i, j := 1, 100 ; i < j ; j-- {
+		i++
+	}
 }

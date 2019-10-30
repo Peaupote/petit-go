@@ -15,17 +15,6 @@
          in
          { v = Etuple lst; position = pos }
 
-    let var_block ids t vs =
-      let declarations = List.map (fun id -> Idecl (id, t)) ids in
-      if vs = []
-      then Iblock declarations
-      else
-        let ids' =
-          List.map
-            (fun id -> { v = Eident id.v ; position = id.position })
-            ids in
-        Iblock (declarations @ [Iasgn (tuple ids', tuple vs)])
-
 %}
 
 %token EOF
@@ -128,7 +117,7 @@ instr:
 | i = instr_if     { i }
 | b = block        { b }
 | VAR ids = separated_nonempty_list(COMMA, loc(IDENT)) t = loc(ty)?
-  vs = loption(rvalue) { var_block ids t vs }
+  vs = rvalue? { Idecl (ids, t, vs) }
 | FOR b = block { Ifor ({ v = Ebool true; position = $startpos, $endpos }, b) }
 | FOR e = loc(expr) b = block { Ifor (e, b) }
 | FOR i1 = instr_simple? SEMI
@@ -147,7 +136,7 @@ instr_simple:
 | e = loc(expr) INCR { Iside (e, Incr) }
 | e = loc(expr) DECR { Iside (e, Decr) }
 | e1 = separated_nonempty_list(COMMA, loc(expr)) e2 = rvalue
-      { Iasgn (tuple e1, tuple e2) }
+      { Iasgn (tuple e1, e2) }
 | ids = separated_nonempty_list(COMMA, loc(expr))
   CEQ vs = separated_nonempty_list(COMMA, loc(expr))
              { let ids =
@@ -158,7 +147,7 @@ instr_simple:
                      | _ -> raise Parsing.Parse_error)
                  ids
                in
-               var_block ids None vs }
+               Idecl (ids, None, Some (tuple vs)) }
 | RETURN es = separated_list(COMMA, loc(expr)) { Ireturn (tuple es) }
 ;
 
@@ -169,7 +158,7 @@ instr_if:
 ;
 
 rvalue:
-  EQ es = separated_nonempty_list(COMMA, loc(expr)) { es }
+  EQ es = separated_nonempty_list(COMMA, loc(expr)) { tuple es }
 ;
 
 expr:

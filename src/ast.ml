@@ -37,7 +37,7 @@ and instruction =
 | Iside   of expr loc * side
 | Iasgn   of expr loc * expr loc
 | Iblock  of instruction list
-| Idecl   of ident loc * ty loc option
+| Idecl   of ident loc list * ty loc option * expr loc option
 | Ireturn of expr loc
 | Ifor    of expr loc * instruction
 | Iif     of expr loc * instruction * instruction

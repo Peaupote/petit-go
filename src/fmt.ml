@@ -81,6 +81,12 @@ let fprintf_side fmt = function
   | Incr -> fprintf fmt "++"
   | Decr -> fprintf fmt "--"
 
+let fprintf_str fmt s = fprintf fmt "%s" s.v
+
+let fprintf_opt f fmt = function
+  | Some x -> fprintf fmt "%a" f x
+  | None   -> ()
+
 let rec fprintf_instruction fmt = function
   | Inop -> fprintf fmt "{}"
   | Iexpr e -> fprintf fmt "%a" fprintf_expr e.v
@@ -93,10 +99,15 @@ let rec fprintf_instruction fmt = function
      fprintf fmt "{\n";
      List.iter (fun i -> fprintf fmt "%a;\n" fprintf_instruction i) b;
      fprintf fmt "}"
-  | Idecl (id, Some ty) ->
-     fprintf fmt "var %s %a" id.v fprintf_type ty.v
-  | Idecl (id, None) ->
-     fprintf fmt "var %s" id.v
+  | Idecl (ids, ty, Some e) ->
+     fprintf fmt "var %a %a = %a"
+       (fprintf_list fprintf_str) ids
+       (fprintf_opt (fun fmt x -> fprintf_type fmt x.v)) ty
+       fprintf_expr e.v
+  | Idecl (ids, ty, None) ->
+     fprintf fmt "var %a %a"
+       (fprintf_list fprintf_str) ids
+       (fprintf_opt (fun fmt x -> fprintf_type fmt x.v)) ty
   | Ireturn e ->
      fprintf fmt "return %a" fprintf_expr e.v
   | Ifor (c, i) ->
