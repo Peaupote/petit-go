@@ -1,12 +1,12 @@
 open Format
 open Ast
 
-let rec fprintf_list f fmt lst =
+let rec fprintf_list f sep fmt lst =
   match lst with
   | [] -> ()
   | x :: [] -> fprintf fmt "%a" f x
-  | x :: xs -> fprintf fmt "%a," f x;
-              fprintf_list f fmt xs
+  | x :: xs -> fprintf fmt "%a%s" f x sep;
+              fprintf_list f sep fmt xs
 
 let fprintf_option f fmt = function
   | Some s -> fprintf fmt "%a" f s
@@ -20,16 +20,15 @@ let rec fprintf_type fmt = function
   | Tref name    -> fprintf fmt "*%a" fprintf_type name.v
 
 let fprintf_struct fmt s =
-  fprintf fmt "type %s struct {\n" s.s_name.v;
-  List.iter (fun (ty, id) -> fprintf fmt "%s %a;\n" id.v fprintf_type ty.v) s.s_body;
-  fprintf fmt "};\n"
+  let pp_field fmt (ty, id) = fprintf fmt "%s %a" id.v fprintf_type ty.v in
+  fprintf fmt "type %s struct {\n%a\n}" s.s_name.v (fprintf_list pp_field ";\n") s.s_body
 
 let fprintf_params fmt ps =
-  List.iter (fun (ty, id) -> fprintf fmt "%s %a," id.v fprintf_type ty.v) ps
+  let pp_arg fmt (ty, id) = fprintf fmt "%s %a" id.v fprintf_type ty.v in
+  fprintf_list pp_arg "," fmt ps
 
 let fprintf_return fmt ret =
-  let fprintf_lst fmt = List.iter (fun ty -> fprintf fmt "%a," fprintf_type ty.v) in
-  fprintf fmt "(%a)" fprintf_lst ret
+  fprintf fmt "(%a)" (fprintf_list fprintf_type ",") (List.map (fun x -> x.v) ret)
 
 let fprintf_unop fmt = function
   | Not -> fprintf fmt "!"
@@ -59,20 +58,20 @@ let rec fprintf_expr fmt = function
   | Ebool b -> fprintf fmt "%B" b
   | Etuple lst ->
      fprintf fmt "(%a)"
-       (fprintf_list fprintf_expr)
+       (fprintf_list fprintf_expr ",")
        (List.map (fun e -> e.v) lst)
-  | Eattr (e, a) -> fprintf fmt "[%a].%s" fprintf_expr e.v a.v
+  | Eattr (e, a) -> fprintf fmt "(%a).%s" fprintf_expr e.v a.v
   | Ecall (e, ps) ->
-     fprintf fmt "[%a](%a)"
+     fprintf fmt "(%a)(%a)"
        fprintf_expr e.v
-       (fprintf_list fprintf_expr)
+       (fprintf_list fprintf_expr ",")
        (List.map (fun e -> e.v) ps)
   | Eunop (op, e) ->
-     fprintf fmt "[%a %a]"
+     fprintf fmt "(%a%a)"
        fprintf_unop op
        fprintf_expr e.v
   | Ebinop (op, e1, e2) ->
-     fprintf fmt "[%a %a %a]"
+     fprintf fmt "(%a %a %a)"
        fprintf_expr e1.v
        fprintf_binop op
        fprintf_expr e2.v
@@ -101,12 +100,12 @@ let rec fprintf_instruction fmt = function
      fprintf fmt "}"
   | Idecl (ids, ty, Some e) ->
      fprintf fmt "var %a %a = %a"
-       (fprintf_list fprintf_str) ids
+       (fprintf_list fprintf_str ",") ids
        (fprintf_opt (fun fmt x -> fprintf_type fmt x.v)) ty
        fprintf_expr e.v
   | Idecl (ids, ty, None) ->
      fprintf fmt "var %a %a"
-       (fprintf_list fprintf_str) ids
+       (fprintf_list fprintf_str ",") ids
        (fprintf_opt (fun fmt x -> fprintf_type fmt x.v)) ty
   | Ireturn e ->
      fprintf fmt "return %a" fprintf_expr e.v
