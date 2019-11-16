@@ -15,9 +15,9 @@ let fprintf_option f fmt = function
 let fprintf_comment fmt txt =
   fprintf fmt "/* %s */\n" txt
 
-let fprintf_type fmt = function
+let rec fprintf_type fmt = function
   | Tstruct name -> fprintf fmt "%s" name.v
-  | Tref name    -> fprintf fmt "*%s" name.v
+  | Tref name    -> fprintf fmt "*%a" fprintf_type name.v
 
 let fprintf_struct fmt s =
   fprintf fmt "type %s struct {\n" s.s_name.v;

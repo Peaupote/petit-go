@@ -100,7 +100,7 @@ return_ty:
 
 ty:
   s = loc(IDENT)      { Tstruct s }
-| STAR s = loc(IDENT) { Tref s }
+| STAR s = loc(ty) { Tref s }
 ;
 
 vars:
@@ -113,7 +113,8 @@ block:
 ;
 
 instr:
-  s = instr_simple { s }
+| { Inop }
+| s = instr_simple { s }
 | i = instr_if     { i }
 | b = block        { b }
 | VAR ids = separated_nonempty_list(COMMA, loc(IDENT)) t = loc(ty)?
@@ -148,7 +149,8 @@ instr_simple:
                  ids
                in
                Idecl (ids, None, Some (tuple vs)) }
-| RETURN es = separated_list(COMMA, loc(expr)) { Ireturn (tuple es) }
+| RETURN { Ireturn { v = Enil; position = $startpos, $endpos } }
+| RETURN es = separated_nonempty_list(COMMA, loc(expr)) { Ireturn (tuple es) }
 ;
 
 instr_if:
@@ -170,10 +172,13 @@ expr:
 | NIL         { Enil }
 | LPAR e = expr RPAR { e }
 | e = loc(expr) DOT i = loc(IDENT) { Eattr (e, i) }
-| f = loc(expr) LPAR es = separated_list(COMMA, loc(expr)) RPAR { Ecall (f, es) }
+| f = loc(expr) LPAR es = separated_list(COMMA, loc(expr)) RPAR
+  { Ecall (f, es) }
 | e1 = loc(expr) o = binop e2 = loc(expr) { Ebinop (o, e1, e2) }
 | o = unop e = loc(expr) { Eunop(o, e) }
-| MINUS e = loc(expr) %prec uminus { Ebinop(Sub, {v = Eint Int64.zero; position = $startpos, $endpos}, e) }
+| MINUS e = loc(expr) %prec uminus
+  { Ebinop(Sub, {v = Eint Int64.zero;
+                 position = $startpos, $endpos}, e) }
 ;
 
 %inline unop:

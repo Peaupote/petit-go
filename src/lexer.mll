@@ -48,8 +48,6 @@ let ident       = alpha(alpha|digit)*
 let decimal_int = digit+
 let hex_int     = ("0x"|"0X")['0'-'9' 'a'-'f' 'A'-'F']+
 let integer     = decimal_int | hex_int
-let char        = [^ '"' '\\' '\n' '\t']
-let string      = '"' char* '"'
 
 rule token = parse
 | blank         { token lexbuf }
@@ -82,7 +80,9 @@ rule token = parse
 | "||"          { tok OR }
 | "++"          { tok INCR }
 | "--"          { tok DECR }
-| string  as s  { STRING (String.sub s 1 (String.length s - 2)) |> tok }
+| '"'           { string (Buffer.create 256) lexbuf }
+| '-' blank* "9223372036854775808"
+| '-' blank* "0x8000000000000000"   { INT Int64.min_int }
 | integer as i  { try INT (Int64.of_string i) |> tok
                   with Failure _ ->
                     lexing_error (i ^ " is too big for 64-bit integer") }
@@ -92,6 +92,16 @@ rule token = parse
                   in tok t }
 | eof           { tok EOF }
 | _ as c        { lexing_error ("Unexpected " ^ (Char.escaped c)) }
+
+and string buf = parse
+| '"'                { STRING (Buffer.contents buf) |> tok }
+| '\\' '\\'          { Buffer.add_char buf '\\'; string buf lexbuf }
+| '\\' 'n'           { Buffer.add_char buf '\n'; string buf lexbuf }
+| '\\' 't'           { Buffer.add_char buf '\r'; string buf lexbuf }
+| '\\' '"'           { Buffer.add_char buf '"' ; string buf lexbuf }
+| [^ '"' '\\']+ as s { Buffer.add_string buf s; string buf lexbuf }
+| _ as c { lexing_error ("Illegal string character " ^ (Char.escaped c) ^ ".") }
+| eof    { lexing_error "Unclosed string." }
 
 and comment = parse
 | "*/"     { token lexbuf }

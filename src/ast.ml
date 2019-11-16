@@ -15,7 +15,7 @@ type 'a loc =
 
 and ty =
   | Tstruct of string loc
-  | Tref    of string loc
+  | Tref    of ty loc
 
 and var = ty loc * ident loc
 
