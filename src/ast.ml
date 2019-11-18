@@ -9,6 +9,12 @@ type unop  = Not | Deref | Ref
 type side = Incr | Decr
 type position = Lexing.position * Lexing.position
 
+exception Error of string
+let error msg = raise (Error msg)
+
+exception Compile_error of position * string
+let compile_error p msg = raise (Compile_error (p, msg))
+
 type 'a loc =
   { v : 'a;
     position : position }
@@ -67,6 +73,3 @@ let empty_pkg name imports = {
     p_imports    = imports;
     p_structures = [];
     p_functions  = [] }
-
-module Prog = Map.Make(struct type t = string
-                              let compare = compare end)

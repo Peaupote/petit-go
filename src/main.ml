@@ -3,6 +3,7 @@
 open Format
 open Lexing
 open Ast
+open Typer
 
 let parse_only = ref false
 let type_only  = ref false
@@ -22,7 +23,7 @@ let localisation pos =
   let c = pos.pos_cnum - pos.pos_bol + 1 in
   eprintf "File \"%s\", line %d, characters %d-%d:\n" !ifile l (c-1) c
 
-let packages = ref Prog.empty
+let envs = ref Smap.empty
 
 let compile file =
   ifile := file;
@@ -40,18 +41,24 @@ let compile file =
     let pkg = Parser.package Lexer.token buf in
     if !parse_only then exit 0;
 
-    if Prog.exists (fun name _ -> name = pkg.p_name.v) !packages
-    then begin
-        eprintf "Package with name %s already exists.@." pkg.p_name.v;
-        exit 1
-      end;
+    let env = try Smap.find pkg.p_name.v !envs
+              with Not_found -> empty_env in
 
-    packages := Prog.add pkg.p_name.v pkg !packages;
+    envs := Smap.add pkg.p_name.v (type_prog env pkg) !envs;
 
     close_in f;
-
-    Fmt.save "rev_compiled.go" !packages
   with
+  | Error msg ->
+     eprintf "Error: %s@." msg;
+     exit 1
+  | Compile_error (p, msg) ->
+     localisation (fst p);
+     eprintf "Error: %s.@." msg;
+     exit 1
+  | Typing_error (p, msg) ->
+     localisation (fst p);
+     eprintf "Error: %s.@." msg;
+     exit 1
   | Lexer.Lexing_error msg ->
      localisation (Lexing.lexeme_start_p buf);
      eprintf "Lexical error: %s.@." msg;
@@ -70,3 +77,10 @@ let () =
       Arg.usage options usage;
       exit 1;
     end;
+
+  try
+    try let main = Smap.find "main" !envs in
+        if not (Smap.mem "main" main.funcs)
+        then error "no function main";
+    with Not_found -> error "no package main"
+  with Error msg -> eprintf "Error: %s.@." msg; exit 1
