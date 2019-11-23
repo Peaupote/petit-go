@@ -4,14 +4,15 @@ import "some_pkg"
 
 type X struct {
 	left, right *X
-	v Y
+	v bool
 }
 
 type Y struct {}
 
-func add (x X, y X) Y {}
-
-func main(x, y int) {
-	y = *nil
-	y = x + 1
+func main(x X, y int) {
+	x.left
+	for x.v {
+		y = y + 2
+	}
+	return x + y
 }

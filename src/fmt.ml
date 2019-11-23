@@ -124,28 +124,3 @@ let fprintf_func fmt f =
     fprintf_params f.f_params
     fprintf_return f.f_return
     fprintf_instruction f.f_body
-
-let fprintf_prog fmt prog =
-  Prog.iter
-    (fun pkg ast ->
-      fprintf_comment fmt "Reversed compiled package.";
-      fprintf fmt "package %s;\n\n" pkg;
-
-      fprintf_comment fmt "All imports of the package";
-      List.iter (fun i -> fprintf fmt "import \"%s\";\n" i.v) ast.p_imports;
-      fprintf fmt "\n";
-
-      fprintf_comment fmt "All structures of the package";
-      List.iter (fun s -> fprintf fmt "%a\n" fprintf_struct s.v) ast.p_structures;
-
-      fprintf_comment fmt "All functions of the package";
-      List.iter (fun f -> fprintf fmt "%a\n" fprintf_func f.v) ast.p_functions;
-
-      fprintf_comment fmt "Enf of package.")
-    prog;
-  fprintf fmt "@."
-
-let save file prog =
-  let ch = open_out file in
-  Format.fprintf (Format.formatter_of_out_channel ch) "%a" fprintf_prog prog;
-  close_out ch

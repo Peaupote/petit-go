@@ -183,8 +183,8 @@ expr:
 
 %inline unop:
   NOT  { Not }
-| AMP  { Deref }
-| STAR { Ref }
+| AMP  { Ref }
+| STAR { Deref }
 ;
 
 %inline binop:
