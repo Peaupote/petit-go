@@ -9,10 +9,12 @@ type X struct {
 
 type Y struct {}
 
+func add(x int, y int) int { return x + y }
+func swap(x, y int) (int, int) { return y, x }
+
 func main(x X, y int) {
 	x.left
 	for x.v {
-		y = y + 2
+		y = add(y, y)
 	}
-	return x + y
 }

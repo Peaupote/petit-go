@@ -5,10 +5,12 @@ module Smap = Map.Make(String)
 
 type typ =
   Any
+| Tvoid
 | Tnil
 | Tint
 | Tbool
 | Tstring
+| Ttuple  of typ list
 | Tstruct of ident * typ Smap.t
 | Tref    of typ
 
@@ -16,12 +18,19 @@ type etype = { t : typ; left : bool }
 let ltyp t = { t = t; left = true }
 let typ t  = { t = t; left = false }
 
-let rec pp_typ fmt = function
+let rec pp_product fmt = function
+  | [] -> ()
+  | x :: [] -> fprintf fmt "%a" pp_typ x
+  | x :: xs -> fprintf fmt "%a * " pp_typ x; pp_product fmt xs
+
+and pp_typ fmt = function
   | Any -> fprintf fmt "any type"
+  | Tvoid -> fprintf fmt "void"
   | Tnil -> fprintf fmt "nil"
   | Tint -> fprintf fmt "int"
   | Tbool -> fprintf fmt "bool"
   | Tstring -> fprintf fmt "string"
+  | Ttuple tps -> fprintf fmt "%a" pp_product tps
   | Tstruct (s, _) -> fprintf fmt "%s" s
   | Tref t -> fprintf fmt "*%a" pp_typ t
 
@@ -42,12 +51,12 @@ type texpr =
 | Teint    of int64
 | Testring of string
 | Tebool   of bool
-| Tident  of ident
-| Ttuple  of texpr list
-| Tattr   of texpr * ident
-| Tcall   of texpr * texpr list
-| Tunop   of unop * texpr
-| Tbinop  of binop * texpr * texpr
+| Tident   of ident
+| Tetuple  of texpr list
+| Tattr    of texpr * ident
+| Tcall    of (ident option) * ident * texpr list
+| Tunop    of unop * texpr
+| Tbinop   of binop * texpr * texpr
 
 type tinstruction =
   Tnop
@@ -128,6 +137,16 @@ and type_unop env op e =
                  | _ -> type_unexpected e.position t.t (Tref Any)
 
 
+and type_tuple env = function
+  | [] -> assert false
+  | x :: [] ->
+     let t, te = type_expr env x in
+     t.t :: [], te :: []
+  | x :: xs ->
+     let t, te = type_expr env x in
+     let tnext, te_next = type_tuple env xs in
+     t.t :: tnext, te :: te_next
+
 and type_expr env el =
   match el.v with
   | Enil -> typ Tnil, Tnil
@@ -141,6 +160,9 @@ and type_expr env el =
        with Not_found -> compile_error el.position
                           (sprintf "unkown variable `%s`" id)
      end
+  | Etuple es ->
+     let ts, tes = type_tuple env es in
+     typ (Ttuple ts), Tetuple tes
   | Ebinop (op, e1, e2) -> type_binop env op e1 e2
   | Eunop (op, e) -> type_unop env op e
   | Eattr (e, id) ->
@@ -155,6 +177,32 @@ and type_expr env el =
      | t -> compile_error e.position
              (asprintf "this has type `%a` but a struct was expected"
                 pp_typ t)
+     end
+  | Ecall (None, f, ps) ->
+     let func =
+       try Smap.find f.v env.funcs
+       with Not_found ->
+         compile_error f.position
+           (asprintf "unkown function `%s`" f.v)
+     in
+
+     let tps =
+       try List.map2
+             (fun ty p ->
+               let tp, tpe = type_expr env p in
+               if ty <> tp.t
+               then type_unexpected p.position tp.t ty
+               else tpe) (fst func) ps
+       with Invalid_argument _ ->
+         compile_error f.position
+           (asprintf "function `%s` expects %d arguments but you gave %d"
+              f.v (List.length (fst func)) (List.length ps))
+     in
+
+     begin match snd func with
+     | [] -> typ Tvoid, Tcall(None, f.v, tps)
+     | x :: [] -> typ x, Tcall(None, f.v, tps)
+     | xs -> typ (Ttuple xs), Tcall(None, f.v, tps)
      end
   | _ -> assert false
 
