@@ -35,7 +35,7 @@
 
 %right NOT AMP
 %left DOT
-%nonassoc uminus LPAR
+%nonassoc uminus
 
 %type <Ast.package> package
 %start package
@@ -108,12 +108,18 @@ vars:
     { List.fold_left (fun acc id -> (t, id) :: acc) [] ids }
 ;
 
+in_block:
+  END { [] }
+| i = instr END { i :: [] }
+| SEMI next = in_block { next }
+| i = instr SEMI next = in_block { i :: next }
+;
+
 block:
-  BEGIN is = lblock(SEMI, END, instr) { Iblock is }
+  BEGIN is = in_block { Iblock is }
 ;
 
 instr:
-| { Inop }
 | s = instr_simple { s }
 | i = instr_if     { i }
 | b = block        { b }
@@ -171,14 +177,23 @@ expr:
 | FALSE       { Ebool false }
 | NIL         { Enil }
 | LPAR e = expr RPAR { e }
-| e = loc(expr) DOT i = loc(IDENT) { Eattr (e, i) }
-| f = loc(expr) LPAR es = separated_list(COMMA, loc(expr)) RPAR
-  { Ecall (f, es) }
+| e = loc(expr) DOT a = after_dot
+      { match a with
+        | i, None -> Eattr (e, i)
+        | i, Some es -> Ecall (Some i, i, es) }
+| i = loc(IDENT) LPAR es = separated_list(COMMA, loc(expr)) RPAR
+              { Ecall (None, i, es) }
 | e1 = loc(expr) o = binop e2 = loc(expr) { Ebinop (o, e1, e2) }
 | o = unop e = loc(expr) { Eunop(o, e) }
 | MINUS e = loc(expr) %prec uminus
   { Ebinop(Sub, {v = Eint Int64.zero;
                  position = $startpos, $endpos}, e) }
+;
+
+after_dot:
+  i = loc(IDENT) { i, None }
+| i = loc(IDENT) LPAR es = separated_list(COMMA, loc(expr)) RPAR
+                 { i, Some es }
 ;
 
 %inline unop:
