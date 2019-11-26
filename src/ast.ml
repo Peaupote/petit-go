@@ -6,7 +6,6 @@ type binop =
   | And | Or
 
 type unop  = Not | Deref | Ref
-type side = Incr | Decr
 type position = Lexing.position * Lexing.position
 
 exception Error of string
@@ -40,7 +39,6 @@ and expr =
 and instruction =
   Inop
 | Iexpr   of expr loc
-| Iside   of expr loc * side
 | Iasgn   of expr loc * expr loc
 | Iblock  of instruction list
 | Idecl   of ident loc list * ty loc option * expr loc option

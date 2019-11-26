@@ -39,12 +39,14 @@ type tfunc = typ list * typ list
 type env = {
     types : typ Smap.t;
     funcs : tfunc Smap.t;
-    vars  : typ Smap.t }
+    vars  : typ Smap.t;
+    packages : env Smap.t }
 
 let empty_env = {
     types = Smap.empty;
-    funcs = Smap.empty ;
-    vars = Smap.empty }
+    funcs = Smap.empty;
+    vars = Smap.empty;
+    packages = Smap.empty }
 
 type texpr =
   Tnil
@@ -57,14 +59,15 @@ type texpr =
 | Tcall    of (ident option) * ident * texpr list
 | Tunop    of unop * texpr
 | Tbinop   of binop * texpr * texpr
+| Tprint   of texpr list
+| Tnew     of typ
 
 type tinstruction =
   Tnop
 | Texpr   of texpr
-| Tside   of texpr * side
 | Tasgn   of texpr * texpr
 | Tblock  of tinstruction list
-| Tdecl   of ident list * ty option * texpr option
+| Tdecl   of ident list * typ option * texpr option
 | Treturn of texpr
 | Tfor    of texpr * tinstruction
 | Tif     of texpr * tinstruction * tinstruction
@@ -136,16 +139,28 @@ and type_unop env op e =
                  | Tref t -> typ t, Tunop (op, te)
                  | _ -> type_unexpected e.position t.t (Tref Any)
 
-
-and type_tuple env = function
+and type_tuple env l = function
   | [] -> assert false
   | x :: [] ->
      let t, te = type_expr env x in
-     t.t :: [], te :: []
+     l && t.left, t.t :: [], te :: []
   | x :: xs ->
      let t, te = type_expr env x in
-     let tnext, te_next = type_tuple env xs in
-     t.t :: tnext, te :: te_next
+     let l, tnext, te_next = type_tuple env l xs in
+     l && t.left, t.t :: tnext, te :: te_next
+
+and resolve_attr_type env id te e = function
+  | Tstruct (s, f) ->
+     begin
+       try ltyp (Smap.find id.v f), Tattr(te, id.v)
+       with Not_found -> compile_error id.position
+                          (sprintf "struct `%s` has no field `%s`" s id.v)
+     end
+  | Tref r -> let t, te = resolve_attr_type env id te e r in
+             ltyp t.t, Tunop(Ref, te)
+  | t -> compile_error e.position
+          (asprintf "this has type `%a` but a struct was expected"
+             pp_typ t)
 
 and type_expr env el =
   match el.v with
@@ -161,26 +176,45 @@ and type_expr env el =
                           (sprintf "unkown variable `%s`" id)
      end
   | Etuple es ->
-     let ts, tes = type_tuple env es in
-     typ (Ttuple ts), Tetuple tes
+     let left, ts, tes = type_tuple env true es in
+     { t = Ttuple ts; left = left }, Tetuple tes
   | Ebinop (op, e1, e2) -> type_binop env op e1 e2
   | Eunop (op, e) -> type_unop env op e
   | Eattr (e, id) ->
      let t, te = type_expr env e in
-     begin match t.t with
-     | Tstruct (s, f) ->
-        begin
-          try typ (Smap.find id.v f), Tattr(te, id.v)
-          with Not_found -> compile_error id.position
-                             (sprintf "struct `%s` has no field `%s`" s id.v)
+     resolve_attr_type env id te e t.t
+  | Ecall(Some pkg, f, ps) when pkg.v = "fmt" && f.v = "Print" ->
+     typ Tvoid, Tprint (List.map (fun x -> snd (type_expr env x)) ps)
+  | Ecall (None, f, x :: []) when f.v = "new" ->
+     begin match x.v with
+     | Eident "int" -> typ (Tref Tint), Tnew Tint
+     | Eident "string" -> typ (Tref Tint), Tnew Tint
+     | Eident "bool" -> typ (Tref Tint), Tnew Tint
+     | Eident s ->
+        begin try let t = Smap.find s env.types in
+                  typ (Tref t), Tnew t
+              with Not_found -> compile_error x.position
+                                 (sprintf "unkonwn type `%s`" s)
         end
-     | t -> compile_error e.position
-             (asprintf "this has type `%a` but a struct was expected"
-                pp_typ t)
-     end
-  | Ecall (None, f, ps) ->
+     | _ -> compile_error x.position
+             "`new` expects a struct of a primitive type as argument" end
+  | Ecall (None, f, _) when f.v = "new" ->
+     compile_error f.position "`new` expects only one arguments"
+  | Ecall (pkg, f, ps) ->
      let func =
-       try Smap.find f.v env.funcs
+       try
+         begin match pkg with
+         | None -> Smap.find f.v env.funcs
+         | Some pkg ->
+            let pkg =
+              begin try Smap.find pkg.v env.packages
+                    with Not_found ->
+                      compile_error pkg.position
+                        (asprintf "unknown package `%s`" pkg.v)
+              end
+            in
+            Smap.find f.v pkg.funcs
+         end
        with Not_found ->
          compile_error f.position
            (asprintf "unkown function `%s`" f.v)
@@ -204,16 +238,68 @@ and type_expr env el =
      | x :: [] -> typ x, Tcall(None, f.v, tps)
      | xs -> typ (Ttuple xs), Tcall(None, f.v, tps)
      end
-  | _ -> assert false
+
+and add_vars ty (ids, env) id =
+  if Smap.mem id.v env.vars
+  then compile_error id.position
+         (asprintf "variable `%s` already exists in the environnement" id.v)
+  else id.v :: ids, { env with vars = Smap.add id.v ty env.vars }
+
+and add_vars2 (ids, env) ty id =
+  if Smap.mem id.v env.vars
+  then compile_error id.position
+         (asprintf "variable `%s` already exists in the environnement" id.v)
+  else id.v :: ids, { env with vars = Smap.add id.v ty env.vars }
+
+and decl_case env ids ty vs =
+  let expected_type =
+    match ty with
+    | Some ty -> Some (of_ty env ty.v)
+    | None -> None in
+  let t, te = type_expr env vs in
+  match expected_type, t.t with
+  | Some _, Ttuple ts when List.length ts <> List.length ids ->
+     compile_error vs.position
+       (sprintf "expecting %d values but got %d"
+          (List.length ts) (List.length ids))
+  | Some expect, Ttuple ts ->
+     begin try let t = List.find ((<>) expect) ts in
+               (* TODO : more precise location  *)
+               type_unexpected vs.position t expect
+           with Not_found ->
+             let ids, env = List.fold_left (add_vars expect) ([], env) ids in
+             env, Tdecl (ids, Some expect, Some te)
+     end
+  | None, Ttuple ts ->
+     begin try let ids, env = List.fold_left2 add_vars2 ([], env) ts ids in
+         env, Tdecl (ids, None, Some te)
+     with Invalid_argument _ ->
+           compile_error vs.position
+             (sprintf "expecting %d values but got %d"
+                (List.length ts) (List.length ids))
+     end
+  | None, t ->
+      let ids, env = List.fold_left (add_vars t) ([], env) ids in
+      env, Tdecl (ids, Some t, Some te)
+  | Some expect, t when t = expect ->
+      let ids, env = List.fold_left (add_vars expect) ([], env) ids in
+      env, Tdecl (ids, Some t, Some te)
+  | Some expect, t -> type_unexpected vs.position t expect
 
 and type_instruction env = function
-  | Inop -> Tnop
-  | Iexpr e -> Texpr (snd (type_expr env e))
-  | Iside (e, s) ->
-     let t, te = type_expr env e in
-     begin match t.t with
-     | Tint -> Tside (te, s)
-     | t -> type_unexpected e.position t Tint end
+  | Inop -> env, Tnop
+  | Iexpr e -> env, Texpr (snd (type_expr env e))
+  | Idecl (ids, Some ty, None) ->
+     let ids, env =
+       List.fold_left
+         (add_vars (of_ty env ty.v))
+         ([], env) ids
+     in
+     env, Tdecl (ids, None, None)
+  | Idecl (ids, ty, Some vs) -> decl_case env ids ty vs
+  | Idecl (ids, None, None) ->
+     compile_error (List.hd ids).position
+       "you must precise type or value of those variables"
   | Iasgn (e1, e2) ->
      let t1, te1 = type_expr env e1 in
      let t2, te2 = type_expr env e2 in
@@ -221,23 +307,28 @@ and type_instruction env = function
      | t1, _ when not t1.left ->
         compile_error e1.position "this is not a left value"
      | t1, t2 when t1.t <> t2.t -> type_unexpected e2.position t2.t t1.t
-     | _ -> Tasgn (te1, te2) end
+     | _ -> env, Tasgn (te1, te2) end
   | Iif (cond, i1, i2) ->
      let t, te = type_expr env cond in
      begin match t.t with
      | Tbool ->
-        let b1 = type_instruction env i1 in
-        let b2 = type_instruction env i2 in
-        Tif (te, b1, b2)
+        let _, b1 = type_instruction env i1 in
+        let _, b2 = type_instruction env i2 in
+        env, Tif (te, b1, b2)
      | t -> type_unexpected cond.position t Tbool end
   | Ifor (cond, i) ->
      let t, te = type_expr env cond in
      begin match t.t with
-     | Tbool -> Tfor (te, type_instruction env i)
+     | Tbool -> env, Tfor (te, snd (type_instruction env i))
      | t -> type_unexpected cond.position t Tbool end
-  | Ireturn e -> Treturn (snd (type_expr env e))
-  | Iblock es -> Tblock (List.map (type_instruction env) es)
-  | _ -> assert false
+  | Ireturn e -> env, Treturn (snd (type_expr env e))
+  | Iblock is ->
+     let env, tis = List.fold_left
+       (fun (env, tes) i ->
+         let env, ti = type_instruction env i in
+         env, ti :: tes) (env, []) is
+     in
+     env, Tblock (List.rev tis)
 
 let rec check_function_params env = function
   | [] -> []

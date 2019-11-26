@@ -34,8 +34,8 @@
 %nonassoc MOD
 
 %right NOT AMP
-%left DOT
 %nonassoc uminus
+%nonassoc DOT
 
 %type <Ast.package> package
 %start package
@@ -140,8 +140,16 @@ instr:
 
 instr_simple:
   e = loc(expr) { Iexpr e }
-| e = loc(expr) INCR { Iside (e, Incr) }
-| e = loc(expr) DECR { Iside (e, Decr) }
+| e = loc(expr) INCR
+        { Iasgn (e, { v = Ebinop(Add, e,
+                                 { v = Eint Int64.one;
+                                   position = e.position });
+                      position = e.position }) }
+| e = loc(expr) DECR
+        { Iasgn (e, { v = Ebinop(Sub, e,
+                                 { v = Eint Int64.one;
+                                   position = e.position });
+                      position = e.position }) }
 | e1 = separated_nonempty_list(COMMA, loc(expr)) e2 = rvalue
       { Iasgn (tuple e1, e2) }
 | ids = separated_nonempty_list(COMMA, loc(expr))
@@ -178,16 +186,18 @@ expr:
 | NIL         { Enil }
 | LPAR e = expr RPAR { e }
 | e = loc(expr) DOT a = after_dot
-      { match a with
-        | i, None -> Eattr (e, i)
-        | i, Some es -> Ecall (Some i, i, es) }
+      { match e.v, a with
+        | _, (i, None) -> Eattr (e, i)
+        | Eident id, (i, Some es) ->
+           Ecall (Some { v = id; position = e.position }, i, es)
+        | _ -> raise Parsing.Parse_error }
 | i = loc(IDENT) LPAR es = separated_list(COMMA, loc(expr)) RPAR
               { Ecall (None, i, es) }
 | e1 = loc(expr) o = binop e2 = loc(expr) { Ebinop (o, e1, e2) }
 | o = unop e = loc(expr) { Eunop(o, e) }
 | MINUS e = loc(expr) %prec uminus
-  { Ebinop(Sub, {v = Eint Int64.zero;
-                 position = $startpos, $endpos}, e) }
+  { Ebinop(Sub, { v = Eint Int64.zero;
+                  position = $startpos, $endpos}, e) }
 ;
 
 after_dot:

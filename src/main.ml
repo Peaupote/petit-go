@@ -80,7 +80,16 @@ let () =
 
   try
     try let main = Smap.find "main" !envs in
-        if not (Smap.mem "main" main.funcs)
-        then error "no function main";
-    with Not_found -> error "no package main"
+        let main_func =
+          try Smap.find "main" main.funcs
+          with Not_found -> error "missing function main"
+        in
+
+        if snd main_func <> []
+        then error "function main should return nothing";
+
+        if fst main_func <> []
+        then error "function main shouldn't take any arguments";
+
+    with Not_found -> error "missing package main"
   with Error msg -> eprintf "Error: %s.@." msg; exit 1
