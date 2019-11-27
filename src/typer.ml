@@ -5,8 +5,7 @@ open Graph
 module Smap = Map.Make(String)
 
 type typ =
-  Any
-| Tvoid
+  Tvoid
 | Tnil
 | Tint
 | Tbool
@@ -25,7 +24,6 @@ let rec pp_product fmt = function
   | x :: xs -> fprintf fmt "%a * " pp_typ x; pp_product fmt xs
 
 and pp_typ fmt = function
-  | Any -> fprintf fmt "any type"
   | Tvoid -> fprintf fmt "void"
   | Tnil -> fprintf fmt "nil"
   | Tint -> fprintf fmt "int"
@@ -80,7 +78,7 @@ let decl info v = { info with local_vars = Vset.add v info.local_vars }
 let ret_info info = { info with is_return = true }
 
 type texpr =
-  Tnil
+  Tenil
 | Teint    of int64
 | Testring of string
 | Tebool   of bool
@@ -148,7 +146,7 @@ let rec type_binop info env op e1 e2 =
      | _, Tbool -> type_unexpected e1.position t1 Tbool
      | _, _ -> type_unexpected e2.position t2 Tbool end
   | Eq | Neq ->
-     if te1 = Tnil && te2 = Tnil
+     if te1 = Tenil && te2 = Tenil
      then compile_error e1.position "you can't compare nil with nil";
      if t1 <> t2 then type_unexpected e2.position t1 t2
      else info, typ Tbool, Tbinop (op, te1, te2)
@@ -170,7 +168,10 @@ and type_unop info env op e =
                    "invalid argument for *: has to be a left value"
             else match t.t with
                  | Tref t -> info, ltyp t, Tunop (op, te)
-                 | _ -> type_unexpected e.position t.t (Tref Any)
+                 | _ -> compile_error e.position
+                         (asprintf
+                            "invalid argument for *: %a is not a reference"
+                            pp_typ t.t)
 
 and type_tuple info env l = function
   | [] -> assert false
@@ -225,7 +226,7 @@ and ret = function
 and type_expr info env el =
   match el.v with
   (* primitives types *)
-  | Enil -> info, typ Tnil, Tnil
+  | Enil -> info, typ Tnil, Tenil
   | Eint i -> info, typ Tint, Teint i
   | Ebool b -> info, typ Tbool, Tebool b
   | Estring s -> info, typ Tstring, Testring s
@@ -322,8 +323,8 @@ and add_vars2 (info, ids, env) ty id =
        { env with vars = Smap.add id.v ty env.vars }
 
 and is_nil = function
-  | Tnil -> true
-  | Tetuple ts -> List.exists ((=) Tnil) ts
+  | Tenil -> true
+  | Tetuple ts -> List.exists ((=) Tenil) ts
   | _ -> false
 
 and decl_case info env ids ty vs =
@@ -338,7 +339,7 @@ and decl_case info env ids ty vs =
        (sprintf "expecting %d values but got %d"
           (List.length ts) (List.length ids))
   | Some expect, Ttuple ts ->
-     begin try let t = List.find ((<>) expect) ts in
+     begin try let t = List.find (fun t -> t <> Tnil && t <> expect) ts in
                (* TODO : more precise location  *)
                type_unexpected vs.position t expect
            with Not_found ->
@@ -360,7 +361,7 @@ and decl_case info env ids ty vs =
      let info, ids, env =
        List.fold_left (add_vars t) (info, [], env) ids in
      info, env, Tdecl (ids, Some t, Some te)
-  | Some expect, t when t = expect ->
+  | Some expect, t when t = Tnil || t = expect ->
      let info, ids, env =
        List.fold_left (add_vars expect) (info, [], env) ids in
      info, env, Tdecl (ids, Some t, Some te)
@@ -400,13 +401,9 @@ and type_instruction info env = function
      let info, t, te = type_expr info env cond in
      begin match t.t with
      | Tbool ->
-        let info, _, b1 = type_instruction info env i1 in
-        if not info.is_return
-        then compile_error cond.position "first branch returns nothing";
-        let info, _, b2 = type_instruction { info with is_return = false } env i2 in
-        if not info.is_return
-        then compile_error cond.position "second branch returns nothing";
-        info, env, Tif (te, b1, b2)
+        let info1, _, b1 = type_instruction info env i1 in
+        let info, _, b2 = type_instruction { info1 with is_return = false } env i2 in
+        { info with is_return = info1.is_return && info.is_return }, env, Tif (te, b1, b2)
      | t -> type_unexpected cond.position t Tbool end
   | Ifor (cond, i) ->
      let info, t, te = type_expr info env cond in
