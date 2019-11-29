@@ -4,6 +4,7 @@ open Format
 open Config
 open Ast
 open Typer
+open Error
 
 let envs = ref Smap.empty
 
@@ -31,26 +32,7 @@ let compile file =
     envs := Smap.add pkg.p_name.v (type_prog env pkg) !envs;
 
     close_in f;
-  with
-  | Error msg ->
-     eprintf "Error: %s@." msg;
-     exit 1
-  | Compile_error (p, msg) ->
-     loc p;
-     eprintf "Error: %s.@." msg;
-     exit 1
-  | Typing_error (p, msg) ->
-     loc p;
-     eprintf "Error: %s.@." msg;
-     exit 1
-  | Lexer.Lexing_error msg ->
-     localisation (Lexing.lexeme_start_p buf);
-     eprintf "Lexical error: %s.@." msg;
-     exit 1
-  | Parser.Error | Parsing.Parse_error ->
-     localisation (Lexing.lexeme_start_p buf);
-     eprintf "Syntax error@.";
-     exit 1
+  with e -> exit_with_error buf e
 
 let () =
   Arg.parse options compile usage;

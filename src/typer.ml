@@ -1,6 +1,7 @@
 open Format
 open Ast
 open Graph
+open Error
 
 module Smap = Map.Make(String)
 
@@ -111,20 +112,20 @@ type tinstruction =
 | Tfor    of texpr * tinstruction
 | Tif     of texpr * tinstruction * tinstruction
 
-exception Typing_error of position * string
-let typing_error pos msg = raise (Typing_error (pos, msg))
-let unknown_type ty =
-  typing_error ty.position (sprintf "unknown type %s" ty.v)
-
 let type_unexpected pos t expect =
   let msg =
     asprintf
-      ("This expression has type `%a` but an expression " ^^
+      ("this expression has type `%a` but an expression " ^^
          "of type `%a` was expected")
       pp_typ t
       pp_typ expect
   in
-  typing_error pos msg
+  compile_error pos msg
+
+let return_type_unexpected pos t e =
+  compile_error pos
+    (asprintf "this function returns `%a` but you return a `%a`"
+       pp_typ e pp_typ t)
 
 let rec of_ty env = function
   | Ast.Tref t -> Tref (of_ty env t.v)
@@ -133,7 +134,7 @@ let rec of_ty env = function
   | Ast.Tstruct { v = "string" ; _ } -> Tstring
   | Ast.Tstruct s ->
      try Smap.find s.v env.types
-     with Not_found -> unknown_type s
+     with Not_found -> unknown_type s.position s.v
 
 let rec type_binop info env op e1 e2 =
   let info, t1, te1 = type_expr info env e1 in
@@ -157,7 +158,7 @@ let rec type_binop info env op e1 e2 =
      | _, _ -> type_unexpected e2.position t2 Tbool end
   | Eq | Neq ->
      if te1 = Tenil && te2 = Tenil
-     then compile_error e1.position "you can't compare nil with nil";
+     then nil_cmp_error e1.position;
      if typ_neq t1 t2 then type_unexpected e2.position t1 t2
      else info, typ Tbool, Tbinop (op, te1, te2)
 
@@ -167,21 +168,16 @@ and type_unop info env op e =
   | Not -> if t.t <> Tbool then type_unexpected e.position t.t Tbool
           else info, typ Tbool, Tunop (op, te)
   | Ref -> if not t.left
-          then compile_error e.position
-                 "invalid argument for &: has to be a left value"
+          then invalid_argument e.position "&" "has to be a left value"
           else info, typ (Tref t.t), Tunop (op, te)
   | Deref -> if t.t = Tnil
-            then compile_error e.position
-                   "invalid argument for *: can't be nil"
+            then error_left_value e.position "*"
             else if not t.left
-            then compile_error e.position
-                   "invalid argument for *: has to be a left value"
+            then error_left_value e.position "*"
             else match t.t with
                  | Tref t -> info, ltyp t, Tunop (op, te)
-                 | _ -> compile_error e.position
-                         (asprintf
-                            "invalid argument for *: %a is not a reference"
-                            pp_typ t.t)
+                 | _ -> invalid_argument e.position "*"
+                         (asprintf "type %a is not a reference" pp_typ t.t)
 
 and type_tuple info env l = function
   | [] -> assert false
@@ -198,8 +194,7 @@ and resolve_attr_type info env id te e = function
      begin
        try let fields = Smap.find s env.structs in
            info, ltyp (Smap.find id.v fields), Tattr(te, id.v)
-       with Not_found -> compile_error id.position
-                          (sprintf "struct `%s` has no field `%s`" s id.v)
+       with Not_found -> unknown_field id.position s id.v
      end
   | Tref r -> let info, t, te = resolve_attr_type info env id te e r in
              info, ltyp t.t, Tunop(Ref, te)
@@ -214,16 +209,12 @@ and find_func info env pkg f =
     | Some pkg_name ->
        let pkg =
          begin try Smap.find pkg_name.v env.packages
-               with Not_found ->
-                 compile_error pkg_name.position
-                   (asprintf "unknown package `%s`" pkg_name.v)
+               with Not_found -> unknown_pkg pkg_name.position pkg_name.v
          end
        in
        used_pkg info pkg_name.v, Smap.find f.v pkg.funcs
     end
-  with Not_found ->
-    compile_error f.position
-      (asprintf "unkown function `%s`" f.v)
+  with Not_found -> unknown_func f.position f.v
 
 and rm = function
   | Some x -> Some x.v
@@ -246,8 +237,7 @@ and type_expr info env el =
      begin
        try let t = Smap.find id env.vars in
            used info id, ltyp t, Tident id
-       with Not_found -> compile_error el.position
-                          (sprintf "unkown variable `%s`" id)
+       with Not_found -> unknown_var el.position id
      end
   | Etuple es ->
      let info, left, ts, tes = type_tuple info env true es in
@@ -264,7 +254,7 @@ and type_expr info env el =
   | Ecall(Some pkg, f, ps) when pkg.v = "fmt" && f.v = "Print" ->
      (* TODO : dont lookup each time *)
      if not (Smap.mem "fmt" env.packages)
-     then compile_error pkg.position "unkown package fmt";
+     then unknown_pkg pkg.position "fmt";
      let info, ps =
        List.fold_right
          (fun p (info, ps) ->
@@ -280,11 +270,10 @@ and type_expr info env el =
      | Eident s ->
         begin try let t = Smap.find s env.types in
                   info, typ (Tref t), Tnew t
-              with Not_found -> compile_error x.position
-                                 (sprintf "unkonwn type `%s`" s)
+              with Not_found -> unknown_type x.position s
         end
      | _ -> compile_error x.position
-             "`new` expects a struct of a primitive type as argument" end
+             "`new` expects a struct or a primitive type as argument" end
   | Ecall (None, f, _) when f.v = "new" ->
      compile_error f.position "`new` expects only one arguments"
 
@@ -309,26 +298,20 @@ and type_expr info env el =
                then type_unexpected p.position tp.t ty
                else info, tpe :: tps) ps_t ps (info, [])
        with Invalid_argument _ ->
-         compile_error f.position
-           (asprintf "function `%s` expects %d arguments but you gave %d"
-              f.v (List.length ps_t) (List.length ps))
+         args_nb_error f.position f.v (List.length ps_t) (List.length ps)
      in
      info, typ (ret ret_t), Tcall(rm pkg, f.v, tps)
 
 and add_vars ty (info, ids, env) id =
   if id.v <> "_" && Vset.mem id.v info.local_vars
-  then compile_error id.position
-         (asprintf "variable `%s` has already been declared in this block"
-            id.v)
+  then all_ready_declared id.position id.v
   else { info with local_vars = Vset.add id.v info.local_vars },
        id.v :: ids,
        { env with vars = Smap.add id.v ty env.vars }
 
 and add_vars2 (info, ids, env) ty id =
   if id.v <> "_" && Vset.mem id.v info.local_vars
-  then compile_error id.position
-         (asprintf "variable `%s` has already been declared in this block"
-            id.v)
+  then all_ready_declared id.position id.v
   else { info with local_vars = Vset.add id.v info.local_vars },
        id.v :: ids,
        { env with vars = Smap.add id.v ty env.vars }
@@ -346,9 +329,7 @@ and decl_case info env ids ty vs =
   let info, t, te = type_expr info env vs in
   match expected_type, t.t with
   | Some _, Ttuple ts when List.length ts <> List.length ids ->
-     compile_error vs.position
-       (sprintf "expecting %d values but got %d"
-          (List.length ts) (List.length ids))
+     decl_nb_error vs.position (List.length ts) (List.length ids)
   | Some expect, Ttuple ts ->
      begin try let t = List.find (typ_neq expect) ts in
                (* TODO : more precise location  *)
@@ -358,15 +339,13 @@ and decl_case info env ids ty vs =
                List.fold_left (add_vars expect) (info, [], env) ids in
              info, env, Tdecl (ids, Some expect, Some te)
      end
-  | None, _ when is_nil te -> compile_error vs.position "untyped nil";
+  | None, _ when is_nil te -> untyped_nil vs.position
   | None, Ttuple ts ->
      begin try let info, ids, env =
                  List.fold_left2 add_vars2 (info, [], env) ts ids in
          info, env, Tdecl (ids, None, Some te)
      with Invalid_argument _ ->
-           compile_error vs.position
-             (sprintf "expecting %d values but got %d"
-                (List.length ts) (List.length ids))
+       decl_nb_error vs.position (List.length ts) (List.length ids)
      end
   | None, t ->
      let info, ids, env =
@@ -397,15 +376,13 @@ and type_instruction info env = function
      in
      info, env, Tdecl (ids, None, None)
   | Idecl (ids, ty, Some vs) -> decl_case info env ids ty vs
-  | Idecl (ids, None, None) ->
-     compile_error (List.hd ids).position
-       "you must precise type or value of those variables"
+  | Idecl (ids, None, None) -> untyped_decl (List.hd ids).position
   | Iasgn (e1, e2) ->
      let info, t1, te1 = type_expr info env e1 in
      let info, t2, te2 = type_expr info env e2 in
      begin match t1, t2 with
      | t1, _ when not t1.left ->
-        compile_error e1.position "this is not a left value"
+        asgn_not_left_value e1.position
      | t1, t2 when typ_neq t1.t t2.t ->
         type_unexpected e2.position t2.t t1.t
      | _ -> info, env, Tasgn (te1, te2) end
@@ -427,14 +404,14 @@ and type_instruction info env = function
   | Ireturn e ->
      let info, t, te = type_expr info env e in
      if check_return_no_underscore te
-     then compile_error e.position "you can't return `_`";
+     then return_drop e.position;
      begin match info.return_type with
-     | [] -> if t.t <> Tnil
-            then compile_error e.position "function returns void"
+     | [] -> if t.t <> Tnil (* BUG HERE *)
+            then return_type_unexpected e.position t.t Tvoid
             else ret_info info, env, Treturn te
      | rt :: [] when typ_eq rt t.t -> ret_info info, env, Treturn te
      | rt when typ_eq t.t (Ttuple rt) -> ret_info info, env, Treturn te
-     | r :: _ -> type_unexpected e.position t.t r
+     | rt -> return_type_unexpected e.position t.t (Ttuple rt)
      end
   | Iblock is ->
      let sinfo, env, tis = List.fold_left
@@ -447,15 +424,14 @@ and type_instruction info env = function
              (fun x -> x <> "_" && not (Vset.mem x sinfo.used_vars))
              sinfo.local_vars
          in
+         (* TODO : print position *)
          error (sprintf "unused variable `%s`" not_used)
      with Not_found -> merge info sinfo, env, Tblock (List.rev tis)
 
 let rec check_function_params env = function
   | [] -> []
   | (_, x) :: xs when List.exists (fun (_, y) -> y.v = x.v) xs ->
-     (* TODO : better time complexity ? *)
-     compile_error x.position
-       (sprintf "variable name `%s` is used more than once" x.v)
+     redondant_param_name x.position x.v
   | (ty, _) :: xs ->
      (of_ty env ty.v) :: (check_function_params env xs)
 
@@ -467,8 +443,7 @@ let type_structure env s =
   let rec check_fields fs = function
     | [] -> fs
     | (_, x) :: xs when List.exists (fun (_, y) -> y.v = x.v) xs ->
-       compile_error x.position
-         (sprintf "field name `%s` is used more than once" x.v)
+       redondant_field_name x.position x.v
     | (ty, x) :: xs ->
        check_fields (Smap.add x.v (of_ty env ty.v) fs) xs
   in
@@ -485,7 +460,7 @@ let type_function (info, env) f =
   in
   let finfo, _, _ = type_instruction finfo { env with vars = vars } f.v.f_body in
   if ret_type <> [] && not finfo.is_return
-  then compile_error f.position "this function returns nothing";
+  then compile_error f.position "this function may returns nothing";
   { info with used_pkg = Vset.union finfo.used_pkg info.used_pkg }, env
 
 let type_prog env prog =
@@ -494,8 +469,7 @@ let type_prog env prog =
       (fun env pkg ->
         if pkg.v = "fmt"
         then { env with packages = Smap.add "fmt" empty_env env.packages }
-        else compile_error pkg.position
-               (sprintf "unkonw package `%s`" pkg.v))
+        else unknown_pkg pkg.position pkg.v)
       env prog.p_imports in
 
   (* Add structures without content *)
@@ -503,8 +477,7 @@ let type_prog env prog =
     List.fold_left
       (fun env s ->
         if Smap.mem s.v.s_name.v env.types
-        then compile_error s.v.s_name.position
-               (sprintf "structure `%s` already exists" s.v.s_name.v);
+        then struct_already_exists s.v.s_name.position s.v.s_name.v;
 
         { env with
           types = Smap.add s.v.s_name.v (Tstruct s.v.s_name.v) env.types })
@@ -516,8 +489,7 @@ let type_prog env prog =
     List.fold_left
       (fun env f ->
         if Smap.mem f.v.f_name.v env.funcs
-        then compile_error f.v.f_name.position
-               (sprintf "function `%s` already exists" f.v.f_name.v);
+        then func_already_exists f.v.f_name.position f.v.f_name.v;
 
         let ps = check_function_params env f.v.f_params in
         let ret = check_function_return env f.v.f_return in
