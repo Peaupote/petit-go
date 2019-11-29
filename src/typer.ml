@@ -318,15 +318,7 @@ and add_vars ty (info, ids, env) id =
          id.v :: ids,
          add_env id.v ty env
 
-and add_vars2 (info, ids, env) ty id =
-  if id.v = "_"
-  then info, id.v :: ids, env
-  else try let pos = Smap.find id.v info.local_vars in
-           already_declared pos id.position id.v
-       with Not_found ->
-         decl info id.v id.position,
-         id.v :: ids,
-         add_env id.v ty env
+and add_vars2 acc ty id = add_vars ty acc id
 
 and is_nil = function
   | Tenil -> true
@@ -344,7 +336,6 @@ and decl_case info env ids ty vs =
      decl_nb_error vs.position (List.length ts) (List.length ids)
   | Some expect, Ttuple ts ->
      begin try let t = List.find (typ_neq expect) ts in
-               (* TODO : more precise location  *)
                type_unexpected vs.position t expect
            with Not_found ->
              let info, ids, env =
@@ -446,7 +437,6 @@ let rec check_function_params env = function
      | Some (_, y) -> redondant_param_name y.position x.position x.v
      | None -> (of_ty env ty.v) :: (check_function_params env xs)
 
-
 let rec check_function_return env = function
   | [] -> []
   | t :: ts -> (of_ty env t.v) :: check_function_return env ts
@@ -531,7 +521,6 @@ let type_prog env prog =
       | _ -> assert false)
     prog.p_structures;
 
-  (* TODO : better error information *)
   let _ = match has_cycle g with
     | Some cycle -> cycle_struct cycle
     | None -> ()
