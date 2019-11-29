@@ -11,8 +11,6 @@ let envs = ref Smap.empty
 let compile file =
   ifile := file;
 
-  dbg "coucou %s" file;
-
   if not (Filename.check_suffix file ".go")
   then begin
       eprintf "File must have .go extention.@.";

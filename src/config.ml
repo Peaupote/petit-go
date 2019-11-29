@@ -19,3 +19,7 @@ let dbg f =
   let ppf = if !verbose then std_formatter else
               make_formatter (fun _ _ _ -> ()) (fun _ -> ()) in
   fprintf ppf f
+
+
+module Smap = Map.Make(String)
+module Vset = Set.Make(String)

@@ -15,9 +15,30 @@ let add_node g v_label u_label =
   v.adj <- u :: v.adj
 
 let rec pp g x =
-  x.status <- InProcess;
-  let ret = List.exists (fun y -> y.status = InProcess || pp g y) x.adj in
-  x.status <- Visited;
-  ret
+  let rec lookup = function
+    | [] -> None
+    | y :: _ when y.status = InProcess -> Some (y.label, y.label :: [])
+    | y :: tl when y.status = Visited -> lookup tl
+    | y :: tl ->
+       match pp g y with
+       | Some (z, cycle) when z = x.label -> Some (z, x.label :: y.label :: cycle)
+       | Some (z, cycle) -> Some (z, y.label :: cycle)
+       | None -> lookup tl
 
-let has_cycle g = List.exists (fun v -> v.status = NotVisited && pp g v) g
+  in
+  x.status <- InProcess;
+  let res = lookup x.adj in
+  x.status <- Visited;
+  res
+
+let has_cycle g =
+  let rec aux = function
+    | [] -> None
+    | x :: tl when x.status = Visited -> aux tl
+    | x :: tl -> match pp g x with
+                | None -> aux tl
+                | c -> c
+  in
+  match aux g with
+  | Some (_, c) -> Some c
+  | None -> None

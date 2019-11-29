@@ -1,9 +1,8 @@
 open Format
+open Config
 open Ast
 open Graph
 open Error
-
-module Smap = Map.Make(String)
 
 type typ =
   Tvoid
@@ -44,7 +43,6 @@ let typ_neq t1 t2 = not (typ_eq t1 t2)
 type tfunc = typ list * typ list
 type tstruct = typ Smap.t
 
-(* TODO : keep track of where things were declared *)
 type env = {
     structs : tstruct Smap.t;
     types : typ Smap.t;
@@ -59,33 +57,39 @@ let empty_env =
     vars = Smap.empty;
     packages = Smap.empty }
 
-module Vset = Set.Make(String)
+let add_env v t env = { env with vars = Smap.add v t env.vars }
 
 type env_info = {
     used_pkg    : Vset.t;
     used_vars   : Vset.t;
-    local_vars  : Vset.t;
+    local_vars  : position Smap.t;
+    pkg_pos     : position Smap.t;
+    func_pos    : position Smap.t;
+    struct_pos  : position Smap.t;
     return_type : typ list;
     is_return   : bool }
 
 let empty_info = {
     used_pkg = Vset.empty;
     used_vars = Vset.empty;
-    local_vars = Vset.empty;
+    local_vars = Smap.empty;
+    pkg_pos = Smap.empty;
+    func_pos = Smap.empty;
+    struct_pos = Smap.empty;
     return_type = [];
     is_return = false }
 
-let clean info = { info with local_vars = Vset.empty }
+let clean info = { info with local_vars = Smap.empty }
 let merge i si = { i with
                    is_return = i.is_return || si.is_return;
                    used_pkg = Vset.union i.used_pkg si.used_pkg;
                    used_vars =
-                     Vset.fold (fun v u -> if Vset.mem v si.local_vars
+                     Vset.fold (fun v u -> if Smap.mem v si.local_vars
                                           then u else Vset.add v u)
                        si.used_vars i.used_vars }
 let used_pkg info v = { info with used_pkg = Vset.add v info.used_pkg }
 let used info v = { info with used_vars = Vset.add v info.used_vars }
-let decl info v = { info with local_vars = Vset.add v info.local_vars }
+let decl info v pos = { info with local_vars = Smap.add v pos info.local_vars }
 let ret_info info = { info with is_return = true }
 
 type texpr =
@@ -298,23 +302,31 @@ and type_expr info env el =
                then type_unexpected p.position tp.t ty
                else info, tpe :: tps) ps_t ps (info, [])
        with Invalid_argument _ ->
-         args_nb_error f.position f.v (List.length ps_t) (List.length ps)
+         let func_pos = Smap.find f.v info.func_pos in
+         args_nb_error func_pos f.position f.v
+           (List.length ps_t) (List.length ps)
      in
      info, typ (ret ret_t), Tcall(rm pkg, f.v, tps)
 
 and add_vars ty (info, ids, env) id =
-  if id.v <> "_" && Vset.mem id.v info.local_vars
-  then all_ready_declared id.position id.v
-  else { info with local_vars = Vset.add id.v info.local_vars },
-       id.v :: ids,
-       { env with vars = Smap.add id.v ty env.vars }
+  if id.v = "_"
+  then info, id.v :: ids, env
+  else try let pos = Smap.find id.v info.local_vars in
+           already_declared pos id.position id.v
+       with Not_found ->
+         decl info id.v id.position,
+         id.v :: ids,
+         add_env id.v ty env
 
 and add_vars2 (info, ids, env) ty id =
-  if id.v <> "_" && Vset.mem id.v info.local_vars
-  then all_ready_declared id.position id.v
-  else { info with local_vars = Vset.add id.v info.local_vars },
-       id.v :: ids,
-       { env with vars = Smap.add id.v ty env.vars }
+  if id.v = "_"
+  then info, id.v :: ids, env
+  else try let pos = Smap.find id.v info.local_vars in
+           already_declared pos id.position id.v
+       with Not_found ->
+         decl info id.v id.position,
+         id.v :: ids,
+         add_env id.v ty env
 
 and is_nil = function
   | Tenil -> true
@@ -419,21 +431,21 @@ and type_instruction info env = function
          let sinfo, env, ti = type_instruction sinfo env i in
          sinfo, env, ti :: tes) (clean info, env, []) is
      in
-     try let not_used =
-           Vset.find_first
+     try let (v, pos) =
+           Smap.find_first
              (fun x -> x <> "_" && not (Vset.mem x sinfo.used_vars))
              sinfo.local_vars
          in
-         (* TODO : print position *)
-         error (sprintf "unused variable `%s`" not_used)
+         unused_var pos v
      with Not_found -> merge info sinfo, env, Tblock (List.rev tis)
 
 let rec check_function_params env = function
   | [] -> []
-  | (_, x) :: xs when List.exists (fun (_, y) -> y.v = x.v) xs ->
-     redondant_param_name x.position x.v
-  | (ty, _) :: xs ->
-     (of_ty env ty.v) :: (check_function_params env xs)
+  | (ty, x) :: xs ->
+     match List.find_opt (fun (_, y) -> y.v = x.v) xs with
+     | Some (_, y) -> redondant_param_name y.position x.position x.v
+     | None -> (of_ty env ty.v) :: (check_function_params env xs)
+
 
 let rec check_function_return env = function
   | [] -> []
@@ -442,10 +454,10 @@ let rec check_function_return env = function
 let type_structure env s =
   let rec check_fields fs = function
     | [] -> fs
-    | (_, x) :: xs when List.exists (fun (_, y) -> y.v = x.v) xs ->
-       redondant_field_name x.position x.v
     | (ty, x) :: xs ->
-       check_fields (Smap.add x.v (of_ty env ty.v) fs) xs
+       match List.find_opt (fun (_, y) -> y.v = x.v) xs with
+       | Some (_, y) -> redondant_field_name y.position x.position x.v
+       | None -> check_fields (Smap.add x.v (of_ty env ty.v) fs) xs
   in
   let fields = check_fields Smap.empty s.v.s_body in
   { env with types = Smap.add s.v.s_name.v (Tstruct s.v.s_name.v) env.types;
@@ -455,7 +467,7 @@ let type_function (info, env) f =
   let (_, ret_type) = Smap.find f.v.f_name.v env.funcs in
   let finfo, vars =
     List.fold_left (fun (finfo, vars) (ty, id) ->
-        decl finfo id.v, Smap.add id.v (of_ty env ty.v) vars)
+        decl finfo id.v id.position, Smap.add id.v (of_ty env ty.v) vars)
       ({ info with return_type = ret_type }, Smap.empty) f.v.f_params
   in
   let finfo, _, _ = type_instruction finfo { env with vars = vars } f.v.f_body in
@@ -464,38 +476,44 @@ let type_function (info, env) f =
   { info with used_pkg = Vset.union finfo.used_pkg info.used_pkg }, env
 
 let type_prog env prog =
-  let env =
+  let info, env =
     List.fold_left
-      (fun env pkg ->
+      (fun (info, env) pkg ->
         if pkg.v = "fmt"
-        then { env with packages = Smap.add "fmt" empty_env env.packages }
+        then { info with pkg_pos = Smap.add pkg.v pkg.position info.pkg_pos },
+             { env with packages = Smap.add "fmt" empty_env env.packages }
         else unknown_pkg pkg.position pkg.v)
-      env prog.p_imports in
+      (empty_info, env) prog.p_imports in
 
   (* Add structures without content *)
-  let env =
+  let (info, env) =
     List.fold_left
-      (fun env s ->
-        if Smap.mem s.v.s_name.v env.types
-        then struct_already_exists s.v.s_name.position s.v.s_name.v;
-
-        { env with
-          types = Smap.add s.v.s_name.v (Tstruct s.v.s_name.v) env.types })
-      env prog.p_structures
+      (fun (info, env) s ->
+        try let s_pos = Smap.find s.v.s_name.v info.struct_pos in
+            struct_already_exists s_pos s.v.s_name.position s.v.s_name.v
+        with Not_found ->
+          { info with
+            struct_pos = Smap.add s.v.s_name.v s.position info.struct_pos },
+          { env with
+            types = Smap.add s.v.s_name.v (Tstruct s.v.s_name.v) env.types })
+      (info, env) (List.rev prog.p_structures)
   in
 
   (* Check and add functions *)
-  let env =
+  let (info, env) =
     List.fold_left
-      (fun env f ->
-        if Smap.mem f.v.f_name.v env.funcs
-        then func_already_exists f.v.f_name.position f.v.f_name.v;
+      (fun (info, env) f ->
+        try let f_pos = Smap.find f.v.f_name.v info.func_pos in
+            func_already_exists f_pos f.v.f_name.position f.v.f_name.v
+        with Not_found ->
 
-        let ps = check_function_params env f.v.f_params in
-        let ret = check_function_return env f.v.f_return in
-        { env with
-          funcs = Smap.add f.v.f_name.v (ps, ret) env.funcs })
-      env prog.p_functions in
+          let ps = check_function_params env f.v.f_params in
+          let ret = check_function_return env f.v.f_return in
+          { info with
+            func_pos = Smap.add f.v.f_name.v f.position info.func_pos },
+          { env with
+            funcs = Smap.add f.v.f_name.v (ps, ret) env.funcs })
+      (info, env) (List.rev prog.p_functions) in
 
   (* Add structure content *)
   let env = List.fold_left type_structure env prog.p_structures in
@@ -514,15 +532,18 @@ let type_prog env prog =
     prog.p_structures;
 
   (* TODO : better error information *)
-  if has_cycle g then error "infinite stack-sized type";
+  let _ = match has_cycle g with
+    | Some cycle -> cycle_struct cycle
+    | None -> ()
+  in
 
   (* Type functions *)
   let info, env = List.fold_left type_function
-                    (empty_info, env) prog.p_functions in
+                    (info, env) prog.p_functions in
 
   (* Look for unused packages *)
-  Smap.iter (fun p _ -> if not (Vset.mem p info.used_pkg)
-                       then error (sprintf "unused package `%s`" p))
-    env.packages;
+  Smap.iter (fun p pos -> if not (Vset.mem p info.used_pkg)
+                         then unused_pkg pos p)
+    info.pkg_pos;
 
   env
