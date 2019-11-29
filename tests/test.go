@@ -1,11 +1,17 @@
 package main
 
-type X struct {
-	left, right *X
-	v int
+import "fmt"
+
+type L struct {
+	x    int
+	next *L
 }
 
-type Y struct {}
+func test(x *L) *L {
+	return x.next.next
+}
 
 func main() {
+	var x, y *L = nil, new(L)
+	var w *L = x.next
 }

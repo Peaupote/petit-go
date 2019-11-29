@@ -11,7 +11,7 @@ type typ =
 | Tbool
 | Tstring
 | Ttuple  of typ list
-| Tstruct of ident * typ Smap.t
+| Tstruct of ident
 | Tref    of typ
 
 type etype = { t : typ; left : bool }
@@ -30,20 +30,30 @@ and pp_typ fmt = function
   | Tbool -> fprintf fmt "bool"
   | Tstring -> fprintf fmt "string"
   | Ttuple tps -> fprintf fmt "%a" pp_product tps
-  | Tstruct (s, _) -> fprintf fmt "%s" s
+  | Tstruct s -> fprintf fmt "%s" s
   | Tref t -> fprintf fmt "*%a" pp_typ t
 
+let typ_eq t1 t2 =
+  match t1, t2 with
+  | Tnil, Tref _ | Tref _, Tnil -> true
+  | _ -> t1 = t2
+
+let typ_neq t1 t2 = not (typ_eq t1 t2)
+
 type tfunc = typ list * typ list
+type tstruct = typ Smap.t
 
 (* TODO : keep track of where things were declared *)
 type env = {
+    structs : tstruct Smap.t;
     types : typ Smap.t;
     funcs : tfunc Smap.t;
     vars  : typ Smap.t;
     packages : env Smap.t }
 
 let empty_env =
-  { types = Smap.empty;
+  { structs = Smap.empty;
+    types = Smap.empty;
     funcs = Smap.empty;
     vars = Smap.empty;
     packages = Smap.empty }
@@ -148,7 +158,7 @@ let rec type_binop info env op e1 e2 =
   | Eq | Neq ->
      if te1 = Tenil && te2 = Tenil
      then compile_error e1.position "you can't compare nil with nil";
-     if t1 <> t2 then type_unexpected e2.position t1 t2
+     if typ_neq t1 t2 then type_unexpected e2.position t1 t2
      else info, typ Tbool, Tbinop (op, te1, te2)
 
 and type_unop info env op e =
@@ -184,9 +194,10 @@ and type_tuple info env l = function
      info, l && t.left, t.t :: tnext, te :: te_next
 
 and resolve_attr_type info env id te e = function
-  | Tstruct (s, f) ->
+  | Tstruct s ->
      begin
-       try info, ltyp (Smap.find id.v f), Tattr(te, id.v)
+       try let fields = Smap.find s env.structs in
+           info, ltyp (Smap.find id.v fields), Tattr(te, id.v)
        with Not_found -> compile_error id.position
                           (sprintf "struct `%s` has no field `%s`" s id.v)
      end
@@ -264,8 +275,8 @@ and type_expr info env el =
   | Ecall (None, f, x :: []) when f.v = "new" ->
      begin match x.v with
      | Eident "int" -> info, typ (Tref Tint), Tnew Tint
-     | Eident "string" -> info, typ (Tref Tint), Tnew Tint
-     | Eident "bool" -> info, typ (Tref Tint), Tnew Tint
+     | Eident "string" -> info, typ (Tref Tstring), Tnew Tint
+     | Eident "bool" -> info, typ (Tref Tbool), Tnew Tint
      | Eident s ->
         begin try let t = Smap.find s env.types in
                   info, typ (Tref t), Tnew t
@@ -282,10 +293,10 @@ and type_expr info env el =
      let info, t, te = type_expr info env c in
      let info, (ps_t, ret_t) = find_func info env pkg f in
      begin match t.t, ps_t with
-     | t, t' :: [] when t = t' -> info, typ (ret ret_t),
+     | t, t' :: [] when typ_eq t t' -> info, typ (ret ret_t),
                                  Tcall (rm pkg, f.v, te::[])
-     | Ttuple ts, ts' when ts = ts' -> info, typ (ret ret_t),
-                                     Tcall (rm pkg, f.v, te::[])
+     | Ttuple ts, ts' when List.for_all2 typ_eq ts ts' ->
+        info, typ (ret ret_t), Tcall (rm pkg, f.v, te::[])
      | t, t' -> type_unexpected c.position t (ret t')
      end
   | Ecall (pkg, f, ps) ->
@@ -294,7 +305,7 @@ and type_expr info env el =
        try List.fold_right2
              (fun ty p (info, tps) ->
                let info, tp, tpe = type_expr info env p in
-               if ty <> tp.t
+               if typ_neq ty tp.t
                then type_unexpected p.position tp.t ty
                else info, tpe :: tps) ps_t ps (info, [])
        with Invalid_argument _ ->
@@ -339,7 +350,7 @@ and decl_case info env ids ty vs =
        (sprintf "expecting %d values but got %d"
           (List.length ts) (List.length ids))
   | Some expect, Ttuple ts ->
-     begin try let t = List.find (fun t -> t <> Tnil && t <> expect) ts in
+     begin try let t = List.find (typ_neq expect) ts in
                (* TODO : more precise location  *)
                type_unexpected vs.position t expect
            with Not_found ->
@@ -361,7 +372,7 @@ and decl_case info env ids ty vs =
      let info, ids, env =
        List.fold_left (add_vars t) (info, [], env) ids in
      info, env, Tdecl (ids, Some t, Some te)
-  | Some expect, t when t = Tnil || t = expect ->
+  | Some expect, t when typ_eq t expect ->
      let info, ids, env =
        List.fold_left (add_vars expect) (info, [], env) ids in
      info, env, Tdecl (ids, Some t, Some te)
@@ -395,7 +406,8 @@ and type_instruction info env = function
      begin match t1, t2 with
      | t1, _ when not t1.left ->
         compile_error e1.position "this is not a left value"
-     | t1, t2 when t1.t <> t2.t -> type_unexpected e2.position t2.t t1.t
+     | t1, t2 when typ_neq t1.t t2.t ->
+        type_unexpected e2.position t2.t t1.t
      | _ -> info, env, Tasgn (te1, te2) end
   | Iif (cond, i1, i2) ->
      let info, t, te = type_expr info env cond in
@@ -416,11 +428,13 @@ and type_instruction info env = function
      let info, t, te = type_expr info env e in
      if check_return_no_underscore te
      then compile_error e.position "you can't return `_`";
-     begin match info.return_type, t.t with
-     | t :: [], t' when t = t' -> ret_info info, env, Treturn te
-     | rs, Ttuple ts when ts = rs -> ret_info info, env, Treturn te
-     | [], _ -> compile_error e.position "function returns void"
-     | r :: _, t -> type_unexpected e.position t r
+     begin match info.return_type with
+     | [] -> if t.t <> Tnil
+            then compile_error e.position "function returns void"
+            else ret_info info, env, Treturn te
+     | rt :: [] when typ_eq rt t.t -> ret_info info, env, Treturn te
+     | rt when typ_eq t.t (Ttuple rt) -> ret_info info, env, Treturn te
+     | r :: _ -> type_unexpected e.position t.t r
      end
   | Iblock is ->
      let sinfo, env, tis = List.fold_left
@@ -459,8 +473,8 @@ let type_structure env s =
        check_fields (Smap.add x.v (of_ty env ty.v) fs) xs
   in
   let fields = check_fields Smap.empty s.v.s_body in
-  { env with types = Smap.add s.v.s_name.v
-                       (Tstruct (s.v.s_name.v, fields)) env.types }
+  { env with types = Smap.add s.v.s_name.v (Tstruct s.v.s_name.v) env.types;
+             structs = Smap.add s.v.s_name.v fields env.structs }
 
 let type_function (info, env) f =
   let (_, ret_type) = Smap.find f.v.f_name.v env.funcs in
@@ -493,8 +507,7 @@ let type_prog env prog =
                (sprintf "structure `%s` already exists" s.v.s_name.v);
 
         { env with
-          types = Smap.add s.v.s_name.v
-                    (Tstruct (s.v.s_name.v, Smap.empty)) env.types })
+          types = Smap.add s.v.s_name.v (Tstruct s.v.s_name.v) env.types })
       env prog.p_structures
   in
 
@@ -519,12 +532,12 @@ let type_prog env prog =
   let g = List.map (fun s -> vertex s.v.s_name.v) prog.p_structures in
   List.iter (fun s ->
       match Smap.find s.v.s_name.v env.types with
-      | Tstruct (s, f) ->
+      | Tstruct s ->
          Smap.iter
            (fun _ t ->
              match t with
-             | Tstruct (s', _) -> add_node g s' s
-             | _ -> ()) f
+             | Tstruct s' -> add_node g s' s
+             | _ -> ()) (Smap.find s env.structs)
       | _ -> assert false)
     prog.p_structures;
 

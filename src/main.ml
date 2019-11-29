@@ -10,6 +10,8 @@ let envs = ref Smap.empty
 let compile file =
   ifile := file;
 
+  dbg "coucou %s" file;
+
   if not (Filename.check_suffix file ".go")
   then begin
       eprintf "File must have .go extention.@.";
@@ -34,11 +36,11 @@ let compile file =
      eprintf "Error: %s@." msg;
      exit 1
   | Compile_error (p, msg) ->
-     localisation (fst p);
+     loc p;
      eprintf "Error: %s.@." msg;
      exit 1
   | Typing_error (p, msg) ->
-     localisation (fst p);
+     loc p;
      eprintf "Error: %s.@." msg;
      exit 1
   | Lexer.Lexing_error msg ->
