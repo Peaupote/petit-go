@@ -23,6 +23,8 @@ func exists(lst *List) bool {
 	return exists(lst.x)
 }
 
+func f() { return nil }
+
 func main() {
 	var dico *BST = nil
 	for i := 1; i < 10; i++ {

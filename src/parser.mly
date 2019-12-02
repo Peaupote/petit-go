@@ -163,7 +163,7 @@ instr_simple:
                  ids
                in
                Idecl (ids, None, Some (tuple vs)) }
-| RETURN { Ireturn { v = Enil; position = $startpos, $endpos } }
+| RETURN { Ireturn { v = Etuple []; position = $startpos, $endpos } }
 | RETURN es = separated_nonempty_list(COMMA, loc(expr)) { Ireturn (tuple es) }
 ;
 

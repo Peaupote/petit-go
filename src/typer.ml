@@ -144,15 +144,21 @@ and type_unop info env op e =
                  | _ -> invalid_argument e.position "*"
                          (asprintf "type %a is not a reference" pp_typ t.t)
 
-and type_tuple info env l = function
-  | [] -> assert false
-  | x :: [] ->
-     let info, t, te = type_expr info env x in
-     info, l && t.left, t.t :: [], te :: []
-  | x :: xs ->
-     let info, t, te = type_expr info env x in
-     let info, l, tnext, te_next = type_tuple info env l xs in
-     info, l && t.left, t.t :: tnext, te :: te_next
+and type_tuple info env lst =
+  let rec aux info l = function
+    | [] -> info, false, Tvoid :: [], Tenil :: []
+    | x :: [] ->
+       let info, t, te = type_expr info env x in
+       info, l && t.left, t.t :: [], te :: []
+    | x :: xs ->
+       let info, t, te = type_expr info env x in
+       let info, l, tnext, te_next = aux info l xs in
+       info, l && t.left, t.t :: tnext, te :: te_next
+  in
+  let info, l, ts, tes = aux info true lst in
+  match ts with
+  | t :: [] -> info, { t = t; left = l }, List.hd tes
+  | ts -> info, { t = Ttuple ts; left = l }, Tetuple tes
 
 (** Follow references until found a structure on which
     we want to get attribute id *)
@@ -214,9 +220,7 @@ and type_expr info env el =
            used info id, ltyp t, Tident id
        with Not_found -> unknown_var env el.position id
      end
-  | Etuple es ->
-     let info, left, ts, tes = type_tuple info env true es in
-     info, { t = Ttuple ts; left = left }, Tetuple tes
+  | Etuple es -> type_tuple info env es
 
   (* primitives operations *)
   | Ebinop (op, e1, e2) -> type_binop info env op e1 e2
@@ -389,9 +393,10 @@ and type_instruction info env = function
      if check_return_no_underscore te
      then return_drop e.position;
      begin match info.return_type with
-     | [] -> if t.t <> Tnil (* BUG HERE *)
-            then return_type_unexpected e.position t.t Tvoid
-            else ret_info info, env, Treturn te
+     | [] ->
+        if t.t <> Tvoid
+        then return_type_unexpected e.position t.t Tvoid
+        else ret_info info, env, Treturn te
      | rt :: [] when typ_eq rt t.t -> ret_info info, env, Treturn te
      | rt when typ_eq t.t (Ttuple rt) -> ret_info info, env, Treturn te
      | rt -> return_type_unexpected e.position t.t (Ttuple rt)

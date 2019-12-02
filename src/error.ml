@@ -248,6 +248,6 @@ let exit_with_error buf = function
      eprintf "Syntax error@.";
      print_file_pos (pos, pos);
      exit 1
-  | _ ->
+  | e ->
      eprintf "An error occured@.";
-     exit 1
+     raise e
