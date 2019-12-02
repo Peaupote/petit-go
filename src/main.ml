@@ -2,6 +2,7 @@ open Format
 open Config
 open Ast
 open Typer
+open Typ
 open Error
 
 (** Functions that parse and type a single file **)

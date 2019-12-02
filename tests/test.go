@@ -14,11 +14,13 @@ type L struct {
 	next P
 }
 
-type P struct {
-	w *M
-}
+type P struct {}
 
-type M struct { x L 
+type List struct { x *List; v int }
+
+func exists(lst *List) bool {
+	if lst.v == 1 { return true }
+	return exists(lst.x)
 }
 
 func main() {

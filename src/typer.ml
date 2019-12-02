@@ -3,73 +3,9 @@ open Config
 open Ast
 open Graph
 open Error
+open Typ
 
 let cur_pkg = ref ""
-
-(** Type for the typer *)
-type typ =
-  Tvoid
-| Tnil
-| Tint
-| Tbool
-| Tstring
-| Ttuple  of typ list
-| Tstruct of ident
-| Tref    of typ
-
-(** A type with information about the variable it's the type of
-    (ie. if it's a left value or not) *)
-type etype = { t : typ; left : bool }
-let ltyp t = { t = t; left = true }
-let typ t  = { t = t; left = false }
-
-let typ_eq t1 t2 =
-  match t1, t2 with
-  | Tnil, Tref _ | Tref _, Tnil -> true
-  | _ -> t1 = t2
-
-let typ_neq t1 t2 = not (typ_eq t1 t2)
-
-(** Type for functions and structures *)
-type tfunc = typ list * typ list
-type tstruct = typ Smap.t
-
-(** Pretty printing *)
-let rec pp_product fmt = function
-  | [] -> ()
-  | x :: [] -> fprintf fmt "%a" pp_typ x
-  | x :: xs -> fprintf fmt "%a * " pp_typ x; pp_product fmt xs
-
-and pp_typ fmt = function
-  | Tvoid -> fprintf fmt "void"
-  | Tnil -> fprintf fmt "nil"
-  | Tint -> fprintf fmt "int"
-  | Tbool -> fprintf fmt "bool"
-  | Tstring -> fprintf fmt "string"
-  | Ttuple tps -> fprintf fmt "%a" pp_product tps
-  | Tstruct s -> fprintf fmt "%s" s
-  | Tref t -> fprintf fmt "*%a" pp_typ t
-
-(** All information about the package
-    that you want to keep after typing *)
-type env = {
-    structs : tstruct Smap.t;
-    types : typ Smap.t;
-    funcs : tfunc Smap.t;
-    vars  : typ Smap.t;
-    packages : Vset.t }
-
-let empty_env =
-  { structs = Smap.empty;
-    types = Smap.empty;
-    funcs = Smap.empty;
-    vars = Smap.empty;
-    packages = Vset.empty }
-
-let add_env v t env = { env with vars = Smap.add v t env.vars }
-
-(** Map associating an package name with its associated environnement **)
-let all_packages : env Smap.t ref = ref Smap.empty
 
 (** All informations about the package
     you are not willing to keep after typing *)
@@ -163,7 +99,7 @@ let rec of_ty env = function
   | Ast.Tstruct { v = "string" ; _ } -> Tstring
   | Ast.Tstruct s ->
      try Smap.find s.v env.types
-     with Not_found -> unknown_type s.position s.v
+     with Not_found -> unknown_type env s.position s.v
 
 let rec type_binop info env op e1 e2 =
   let info, t1, te1 = type_expr info env e1 in
@@ -225,7 +161,7 @@ and resolve_attr_type info env id te e = function
      begin
        try let fields = Smap.find s env.structs in
            info, ltyp (Smap.find id.v fields), Tattr(te, id.v)
-       with Not_found -> unknown_field id.position s id.v
+       with Not_found -> unknown_field env id.position s id.v
      end
   | Tref r -> let info, t, te = resolve_attr_type info env id te e r in
              info, ltyp t.t, Tunop(Ref, te)
@@ -241,15 +177,15 @@ and find_func info env pkg f =
     | None -> info, Smap.find f.v env.funcs
     | Some pkg_name ->
        let pkg =
-         begin try Smap.find pkg_name.v !all_packages
-               with Not_found -> unknown_pkg pkg_name.position pkg_name.v
-         end
+         try Smap.find pkg_name.v !all_packages
+         with Not_found -> unknown_pkg pkg_name.position pkg_name.v
        in
        if not (Vset.mem pkg_name.v env.packages)
-       then unknown_pkg pkg_name.position pkg_name.v; (* TODO : an other error *)
-       used_pkg info pkg_name.v, Smap.find f.v pkg.funcs
+       then unknown_pkg pkg_name.position pkg_name.v;
+       try used_pkg info pkg_name.v, Smap.find f.v pkg.funcs
+       with Not_found -> unknown_func pkg f.position f.v
     end
-  with Not_found -> unknown_func f.position f.v
+  with Not_found -> unknown_func env f.position f.v
 
 and rm = function
   | Some x -> Some x.v
@@ -276,7 +212,7 @@ and type_expr info env el =
      begin
        try let t = Smap.find id env.vars in
            used info id, ltyp t, Tident id
-       with Not_found -> unknown_var el.position id
+       with Not_found -> unknown_var env el.position id
      end
   | Etuple es ->
      let info, left, ts, tes = type_tuple info env true es in
@@ -309,7 +245,7 @@ and type_expr info env el =
      | Eident s ->
         begin try let t = Smap.find s env.types in
                   info, typ (Tref t), Tnew t
-              with Not_found -> unknown_type x.position s
+              with Not_found -> unknown_type env x.position s
         end
      | _ -> compile_error x.position
              "`new` expects a struct or a primitive type as argument" end
@@ -539,7 +475,7 @@ let type_prog env prog =
                                        (sprintf "conflicting types `%s`" t))
                         env.types p.types;
               packages = Vset.add pkg.v env.packages }
-          with Not_found -> unknown_pkg pkg.position pkg.v)
+          with Not_found -> unknown_import_pkg pkg.position pkg.v)
       (empty_info, env) prog.p_imports in
 
   (* Add structures without content *)

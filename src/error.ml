@@ -2,6 +2,41 @@ open Format
 open Lexing
 open Config
 open Ast
+open Typ
+
+let minimum a b c =
+  min a (min b c)
+
+let editing_distance s t =
+  let m = String.length s
+  and n = String.length t in
+  let d = Array.make_matrix (m+1) (n+1) 0 in
+
+  for i = 0 to m do d.(i).(0) <- i done;
+  for j = 0 to n do d.(0).(j) <- j done;
+
+  for j = 1 to n do
+    for i = 1 to m do
+      if s.[i-1] = t.[j-1] then
+        d.(i).(j) <- d.(i-1).(j-1)
+      else
+        d.(i).(j) <- minimum
+                      (d.(i-1).(j) + 1)
+                      (d.(i).(j-1) + 1)
+                      (d.(i-1).(j-1) + 1)
+    done;
+  done;
+
+  d.(m).(n)
+
+let lookup s vs =
+  Smap.fold (fun x _ acc ->
+      let d = editing_distance s x in
+      match acc with
+      | None when d <= 3 -> Some (x, d)
+      | Some (_, d') when d < d' -> Some (x, d)
+      | None | Some _ -> acc)
+    vs None
 
 exception Error of string
 let error msg = raise (Error msg)
@@ -13,21 +48,6 @@ let nil_cmp_error p = compile_error p "you can't compare nil with nil"
 let invalid_argument p op msg =
   compile_error p (sprintf "invalid argument for %s: %s" op msg)
 let error_left_value p op = invalid_argument p op "has to be a left value"
-
-let unknown_field p s f =
-  compile_error p (sprintf "struct `%s` has no field `%s`" s f)
-
-let unknown_pkg p pkg =
-  compile_error p (sprintf "unknown package `%s`" pkg)
-
-let unknown_func p func =
-  compile_error p (sprintf "unknown function `%s`" func)
-
-let unknown_var p v =
-  compile_error p (sprintf "unknown variable `%s`" v)
-
-let unknown_type p ty =
-  compile_error p (sprintf "unknown type %s" ty)
 
 let decl_nb_error p e g =
   compile_error p (sprintf "expecting %d values but got %d" e g)
@@ -46,6 +66,40 @@ let unused_var p v =
 
 let unused_pkg p pkg =
   compile_error p (sprintf "unused package `%s`" pkg)
+
+let unknown_import_pkg p pkg =
+  compile_error p (sprintf "unknown package `%s`" pkg)
+
+exception Hint_error of position * string * string
+let hint_error p msg help = raise (Hint_error (p, msg, help))
+
+let unknown_pkg p pkg =
+  hint_error p (sprintf "unknown package `%s`" pkg)
+    (sprintf "maybe you forgot `import \"%s\"` at the begining of the file" pkg)
+
+let unknown_var env p v =
+  match lookup v env.vars with
+  | None -> compile_error p (sprintf "unknown variable `%s`" v)
+  | Some (u, _) -> hint_error p (sprintf "unknown variable `%s`" v)
+                    (sprintf "did you mean `%s` ?" u)
+
+let unknown_field env p s f =
+  match lookup f (Smap.find s env.structs) with
+  | None -> compile_error p (sprintf "struct `%s` has no field `%s`" s f)
+  | Some (u, _) -> hint_error p (sprintf "struct `%s` has no field `%s`" s f)
+                    (sprintf "did you mean `%s` ?" u)
+
+let unknown_func env p func =
+  match lookup func env.funcs with
+  | None -> compile_error p (sprintf "unknown function `%s`" func)
+  | Some (u, _) -> hint_error p (sprintf "unknown function `%s`" func)
+                    (sprintf "did you mean `%s` ?" u)
+
+let unknown_type env p ty =
+  match lookup ty env.types with
+  | None -> compile_error p (sprintf "unknown type `%s`" ty)
+  | Some (u, _) -> hint_error p (sprintf "unknown type `%s`" ty)
+                    (sprintf "did you mean `%s` ?" u)
 
 exception Double_pos_error of position * position * string
 let double_pos_error p1 p2 msg = raise (Double_pos_error (p1, p2, msg))
@@ -165,6 +219,12 @@ let exit_with_error buf = function
      exit 1
   | Error msg ->
      eprintf error_fmt msg;
+     exit 1
+  | Hint_error (p, msg, help) ->
+     loc p;
+     eprintf error_fmt msg;
+     eprintf "Hint: %s@." help;
+     print_file_pos p;
      exit 1
   | Double_pos_error (p1, p2, msg) ->
      loc p2;
