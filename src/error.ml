@@ -2,7 +2,6 @@ open Format
 open Lexing
 open Config
 open Ast
-open Typ
 
 let minimum a b c =
   min a (min b c)

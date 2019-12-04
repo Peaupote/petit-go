@@ -30,7 +30,7 @@ func main() {
 	for i := 1; i < 10; i++ {
 		x := (55 * i) % 34
 		abr.add(&dico, x)
-		abr.print(dico)
+		abr.prt(dico)
 		fmt.Print("\n")
 	}
 	if abr.mem(dico, 8) && !abr.mem(dico, 0) &&

@@ -99,8 +99,8 @@ return_ty:
 ;
 
 ty:
-  s = loc(IDENT)   { Tstruct s }
-| STAR s = loc(ty) { Tref s }
+  s = loc(IDENT)   { Tystruct s }
+| STAR s = loc(ty) { Tyref s }
 ;
 
 vars:

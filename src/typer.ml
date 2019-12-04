@@ -3,7 +3,6 @@ open Config
 open Ast
 open Graph
 open Error
-open Typ
 
 let cur_pkg = ref ""
 
@@ -93,11 +92,11 @@ let return_type_unexpected pos t e =
 
 (** Convert a Parser type to a Typer type *)
 let rec of_ty env = function
-  | Ast.Tref t -> Tref (of_ty env t.v)
-  | Ast.Tstruct { v = "int" ; _ } -> Tint
-  | Ast.Tstruct { v = "bool" ; _ } -> Tbool
-  | Ast.Tstruct { v = "string" ; _ } -> Tstring
-  | Ast.Tstruct s ->
+  | Tyref t -> Tref (of_ty env t.v)
+  | Tystruct { v = "int" ; _ } -> Tint
+  | Tystruct { v = "bool" ; _ } -> Tbool
+  | Tystruct { v = "string" ; _ } -> Tstring
+  | Tystruct s ->
      try Smap.find s.v env.types
      with Not_found -> unknown_type env s.position s.v
 
