@@ -17,7 +17,7 @@ type 'a loc =
     position : position }
 
 and ty =
-  | Tystruct of string loc
+  | Tystruct of string loc option * string loc
   | Tyref    of ty loc
 
 and var = ty loc * ident loc
@@ -163,5 +163,49 @@ let empty_env =
 
 let add_env v t env = { env with vars = Smap.add v t env.vars }
 
+(** All informations about the package
+    you are not willing to keep after typing *)
+type env_info = {
+    used_pkg    : Vset.t;
+    used_vars   : Vset.t;
+
+    (* usefull for error handling : to locate
+       already defined functions, structs of variables *)
+    local_vars  : position Smap.t;
+    pkg_pos     : position Smap.t;
+    func_pos    : position Smap.t;
+    struct_pos  : position Smap.t;
+
+    (* Allows to check if the return type if the good one and
+       if each branch returns something *)
+    return_type : typ list;
+    is_return   : bool }
+
+let empty_info = {
+    used_pkg = Vset.empty;
+    used_vars = Vset.empty;
+    local_vars = Smap.empty;
+    pkg_pos = Smap.empty;
+    func_pos = Smap.empty;
+    struct_pos = Smap.empty;
+    return_type = [];
+    is_return = false }
+
+let clean info = { info with local_vars = Smap.empty }
+let merge i si = { i with
+                   is_return = i.is_return || si.is_return;
+                   used_pkg = Vset.union i.used_pkg si.used_pkg;
+                   used_vars =
+                     Vset.fold (fun v u -> if Smap.mem v si.local_vars
+                                          then u else Vset.add v u)
+                       si.used_vars i.used_vars }
+let used_pkg info v = { info with used_pkg = Vset.add v info.used_pkg }
+let used info v = { info with used_vars = Vset.add v info.used_vars }
+let decl info v pos = { info with local_vars = Smap.add v pos info.local_vars }
+let ret_info info = { info with is_return = true }
+
 (** Map associating an package name with its associated environnement **)
 let all_packages : env Smap.t ref = ref Smap.empty
+
+(** This should be dropped after typing *)
+let all_info_packages : env_info Smap.t ref = ref Smap.empty

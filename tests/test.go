@@ -18,10 +18,8 @@ type P struct {}
 
 type List struct { x *List; v int }
 
-type int struct {}
-
 func main() {
-	var dico *BST = nil
+	var dico *abr.BST = nil
 	for i := 1; i < 10; i++ {
 		x := (55 * i) % 34
 		abr.add(&dico, x)
@@ -36,6 +34,6 @@ func main() {
 	abr.add(&dico, -1);
 	abr.print(dico); fmt.Print("\n")
 
-	x := new(int)
-	*x = *x + 1
+	a := new(abr.string)
+	a = nil
 }

@@ -27,13 +27,11 @@ let compile file =
         exit 0;
       end;
 
-    let env = try Smap.find pkg.p_name.v !all_packages
-              with Not_found -> empty_env in
+    if Smap.mem pkg.p_name.v !all_packages
+    then error (sprintf "package %s has already been completed" pkg.p_name.v);
 
-    if env = empty_env then dbg "New package %s.@." pkg.p_name.v
-    else dbg "Complete package %s.@." pkg.p_name.v;
-
-    all_packages := Smap.add pkg.p_name.v (type_prog env pkg) !all_packages;
+    let env = type_prog empty_env pkg in
+    all_packages := Smap.add pkg.p_name.v env !all_packages;
 
     close_in f;
     dbg "Done with %s.@." file;

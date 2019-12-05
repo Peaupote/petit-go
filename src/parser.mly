@@ -99,7 +99,8 @@ return_ty:
 ;
 
 ty:
-  s = loc(IDENT)   { Tystruct s }
+  s = loc(IDENT)   { Tystruct (None, s) }
+| pkg = loc(IDENT) DOT s = loc(IDENT) { Tystruct (Some pkg, s) }
 | STAR s = loc(ty) { Tyref s }
 ;
 

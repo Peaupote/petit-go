@@ -6,47 +6,6 @@ open Error
 
 let cur_pkg = ref ""
 
-(** All informations about the package
-    you are not willing to keep after typing *)
-type env_info = {
-    used_pkg    : Vset.t;
-    used_vars   : Vset.t;
-
-    (* usefull for error handling : to locate
-       already defined functions, structs of variables *)
-    local_vars  : position Smap.t;
-    pkg_pos     : position Smap.t;
-    func_pos    : position Smap.t;
-    struct_pos  : position Smap.t;
-
-    (* Allows to check if the return type if the good one and
-       if each branch returns something *)
-    return_type : typ list;
-    is_return   : bool }
-
-let empty_info = {
-    used_pkg = Vset.empty;
-    used_vars = Vset.empty;
-    local_vars = Smap.empty;
-    pkg_pos = Smap.empty;
-    func_pos = Smap.empty;
-    struct_pos = Smap.empty;
-    return_type = [];
-    is_return = false }
-
-let clean info = { info with local_vars = Smap.empty }
-let merge i si = { i with
-                   is_return = i.is_return || si.is_return;
-                   used_pkg = Vset.union i.used_pkg si.used_pkg;
-                   used_vars =
-                     Vset.fold (fun v u -> if Smap.mem v si.local_vars
-                                          then u else Vset.add v u)
-                       si.used_vars i.used_vars }
-let used_pkg info v = { info with used_pkg = Vset.add v info.used_pkg }
-let used info v = { info with used_vars = Vset.add v info.used_vars }
-let decl info v pos = { info with local_vars = Smap.add v pos info.local_vars }
-let ret_info info = { info with is_return = true }
-
 (** Error handling *)
 
 let type_unexpected pos t expect =
@@ -67,12 +26,20 @@ let return_type_unexpected pos t e =
 (** Convert a Parser type to a Typer type *)
 let rec of_ty env = function
   | Tyref t -> Tref (of_ty env t.v)
-  | Tystruct s when Smap.mem s.v env.types ->
+  | Tystruct (None, s) when Smap.mem s.v env.types ->
      Smap.find s.v env.types
-  | Tystruct { v = "int" ; _ } -> Tint
-  | Tystruct { v = "bool" ; _ } -> Tbool
-  | Tystruct { v = "string" ; _ } -> Tstring
-  | Tystruct s -> unknown_type env s.position s.v
+  | Tystruct (Some pkg, s) ->
+     let pkg =
+       try Smap.find pkg.v !all_packages
+       with Not_found -> unknown_pkg env pkg.position pkg.v in
+     begin
+       try Smap.find s.v pkg.types
+       with Not_found -> unknown_type pkg s.position s.v
+     end
+  | Tystruct (None, { v = "int" ; _ }) -> Tint
+  | Tystruct (None, { v = "bool" ; _ }) -> Tbool
+  | Tystruct (None, { v = "string" ; _ }) -> Tstring
+  | Tystruct (None, s) -> unknown_type env s.position s.v
 
 let rec type_binop info env op e1 e2 =
   let info, t1, te1 = type_expr info env e1 in
@@ -157,14 +124,18 @@ and find_func info env pkg f =
     | Some pkg_name ->
        let pkg =
          try Smap.find pkg_name.v !all_packages
-         with Not_found -> unknown_pkg pkg_name.position pkg_name.v
+         with Not_found -> unknown_pkg env pkg_name.position pkg_name.v
        in
        if not (Vset.mem pkg_name.v env.packages)
-       then unknown_pkg pkg_name.position pkg_name.v;
+       then unknown_pkg env pkg_name.position pkg_name.v;
        try used_pkg info pkg_name.v, Smap.find f.v pkg.funcs
        with Not_found -> unknown_func pkg f.position f.v
     end
   with Not_found -> unknown_func env f.position f.v
+
+and pkg_info info = function
+  | None -> info
+  | Some pkg -> Smap.find pkg.v !all_info_packages
 
 and rm = function
   | Some x -> Some x.v
@@ -206,7 +177,7 @@ and type_expr info env el =
   | Ecall(Some pkg, f, ps) when pkg.v = "fmt" && f.v = "Print" ->
      (* TODO : dont lookup each time *)
      if not (Vset.mem "fmt" env.packages)
-     then unknown_pkg pkg.position "fmt";
+     then unknown_pkg env pkg.position "fmt";
      let info, ps =
        List.fold_right
          (fun p (info, ps) ->
@@ -225,8 +196,16 @@ and type_expr info env el =
         | Eident "string" -> info, typ (Tref Tstring), Tnew Tint
         | Eident "bool" -> info, typ (Tref Tbool), Tnew Tint
         | Eident s -> unknown_type env x.position s
+        | Eattr ({ v = Eident pkg; _ }, s) when Vset.mem pkg env.packages->
+           let pkg = Smap.find pkg !all_packages in
+           begin try let t = Smap.find s.v pkg.types in
+                     info, typ (Tref t), Tnew t
+                 with Not_found -> unknown_type pkg s.position s.v end
+        | Eattr ({ v = Eident pkg; position = pos }, _) ->
+           unknown_pkg env pos pkg
         | _ -> compile_error x.position
-                "`new` expects a struct or a primitive type as argument" end
+                "`new` expects a struct or a primitive type as argument"
+        end
      | _ -> compile_error f.position "`new` expects only one arguments"
      end
 
@@ -251,7 +230,8 @@ and type_expr info env el =
                then type_unexpected p.position tp.t ty
                else info, tpe :: tps) ps_t ps (info, [])
        with Invalid_argument _ ->
-         let func_pos = Smap.find f.v info.func_pos in
+         let pkg_info = pkg_info info pkg in
+         let func_pos = Smap.find f.v pkg_info.func_pos in
          args_nb_error func_pos f.position f.v
            (List.length ps_t) (List.length ps)
      in
@@ -446,15 +426,9 @@ let type_prog env prog =
             { env with packages = Vset.add "fmt" env.packages }
           end
         else try
-            let p = Smap.find pkg.v !all_packages in
             dbg "Import package `%s`@." pkg.v;
             { info with pkg_pos = Smap.add pkg.v pkg.position info.pkg_pos },
-            { env with
-              types = Smap.union
-                        (fun t _ _ -> compile_error pkg.position
-                                       (sprintf "conflicting types `%s`" t))
-                        env.types p.types;
-              packages = Vset.add pkg.v env.packages }
+            { env with packages = Vset.add pkg.v env.packages }
           with Not_found -> unknown_import_pkg pkg.position pkg.v)
       (empty_info, env) prog.p_imports in
 
@@ -519,7 +493,7 @@ let type_prog env prog =
   in
 
   (* Type functions *)
-  let info, env=
+  let info, env =
     List.fold_left type_function
       (info, env) prog.p_functions in
 
@@ -527,5 +501,7 @@ let type_prog env prog =
   Smap.iter (fun p pos -> if not (Vset.mem p info.used_pkg)
                          then unused_pkg pos p)
     info.pkg_pos;
+
+  all_info_packages := Smap.add prog.p_name.v info !all_info_packages;
 
   env

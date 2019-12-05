@@ -72,9 +72,15 @@ let unknown_import_pkg p pkg =
 exception Hint_error of position * string * string
 let hint_error p msg help = raise (Hint_error (p, msg, help))
 
-let unknown_pkg p pkg =
-  hint_error p (sprintf "unknown package `%s`" pkg)
-    (sprintf "maybe you forgot `import \"%s\"` at the begining of the file" pkg)
+let unknown_pkg env p pkg =
+  match lookup pkg !all_packages with
+  | None -> compile_error p (sprintf "unknown package `%s`" pkg)
+  | Some (name, 0) when not (Vset.mem name env.packages) ->
+     hint_error p (sprintf "unknown package `%s`" pkg)
+       (sprintf "you forgot to `import \"%s\"` at the begining of the file"
+          name)
+  | Some (name, _) -> hint_error p (sprintf "unknown package `%s`" pkg)
+                       (sprintf "did you mean `%s` ?" name)
 
 let unknown_var env p v =
   match lookup v env.vars with
@@ -183,6 +189,7 @@ let print_file_pos (s, e) =
 
 let print_double_pos (s1, e1) (s2, e2) =
   (* TODO : dont print 2 times if the positions are close to each other *)
+  (* TODO : handle when errors are not from the same files *)
   let chan = open_in !ifile in
   print_lines chan s1 e1;
   seek_in chan 0;
@@ -249,4 +256,4 @@ let exit_with_error buf = function
      exit 1
   | e ->
      eprintf "An error occured@.";
-     if !verbose then raise e else exit 1
+     if !verbose then raise e else exit 2
