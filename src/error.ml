@@ -249,4 +249,4 @@ let exit_with_error buf = function
      exit 1
   | e ->
      eprintf "An error occured@.";
-     raise e
+     if !verbose then raise e else exit 1
