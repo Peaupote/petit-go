@@ -11,7 +11,7 @@
 
 \title{
   PetitGo \\
-  \large -- projet de compilation --}
+  \large -- projet de compilation, première partie --}
 
 \author{Maxime FLIN}
 
@@ -25,11 +25,11 @@ Le compilateur a été réalisé en \texttt{Ocaml} avec \texttt{Ocamllex} et \te
 Les principaux fichiers du projet sont dans le dossier \texttt{src}:
 
 \begin{description}
-\item[main] Fichier d'entrée du projet
+\item[main] Fichier d'entrée du programme
 \item[ast] Arbre de syntaxe abstraite utilisé construit pendant le parsage
 \item[config] Fonctions d'utilitées générales et les paramètres passé en ligne de commande (voir section \ref{sec:exec})
 \item[error] Ensemble de fonctions permettant de lever des erreurs et de les afficher proprement (voir section \ref{sec:errors})
-\item[graph] Implémentation rapide de la recherche de cycle dans un graphe
+\item[graph] Implémentation de la recherche de cycle dans un graphe
 \item[lexer et parser] Fichiers \texttt{Ocamllex} et \texttt{Menhir}
 \item[typer] Fonctions de typage
 \end{description}
@@ -38,17 +38,17 @@ On trouve aussi dans le dossier \texttt{tests} les fichiers de test et le script
 
 \subsection{Compiler le compilateur}
 
-Pour compiler le projet, j'ai fait le choix d'utiliser \texttt{dune}. Pour compiler le projet il suffit donc d'entrer les commandes suivantes
+Pour compiler le projet, j'ai fait le choix d'utiliser \texttt{dune}. Il suffit donc d'entrer les commandes suivantes
 
 \begin{verbatim}
 git clone https://git.eleves.ens.fr/mflin/petitgo.git
 cd PetitGo
-dune build main.exe
+dune build src/main.exe
 \end{verbatim}
 
 \subsection{Compiler avec le compilateur\label{sec:exec}}
 
-L'exécutable est assez simple à utiliser. Pour compiler un fichier \texttt{PetitGo} il suffit de passer en paramètre le nom de ce fichier.
+L'exécutable est assez simple à utiliser. Pour compiler un fichier \texttt{PetitGo} il faut le passer en argument le nom de ce fichier à l'exécutable.
 
 Le programme peut aussi prendre des options en fonction des besoins.
 
@@ -58,7 +58,7 @@ Le programme peut aussi prendre des options en fonction des besoins.
 \item[-\-type-only] L'éxécution s'arrête après le typage.
 \end{description}
 
-Ainsi, pour compiler le fichier de test \texttt{tests/exec/abr.go} il suffit de taper dans un terminal la commande
+Ainsi, pour compiler le fichier de test \texttt{tests/exec/abr.go} il suffit d'entrer la commande suivante
 
 \begin{verbatim}
 main.exe tests/exec/abr.go
@@ -66,12 +66,11 @@ main.exe tests/exec/abr.go
 
 \section{Implémentation du sujet}
 
-\subsection{L'arbre de syntaxe abstraite}
+\subsection{L'arbre de syntaxe abstraite\label{sec:ast}}
 
-L'arbre de syntaxe abstrait est représenté par les structures décrites dans le fichier \texttt{ast.ml} dont les plus importantes sont les types représentat les expressions et les instructions
+L'arbre de syntaxe abstrait est représenté par les structures décrites dans le fichier \texttt{ast.ml}. Les deux types les plus importants sont les types représentants les expressions et les instructions
 
 \begin{verbatim}
-
 and expr =
   Enil
 | Eident  of string
@@ -93,12 +92,11 @@ and instruction =
 | Ireturn of expr loc
 | Ifor    of expr loc * instruction
 | Iif     of expr loc * instruction * instruction
-
 \end{verbatim}
 
-On remarquera le constructeur d'expression \texttt{Etuple} qui est simplement une liste d'expression. Le langage \texttt{PetitGo} n'a pas de tuple comme \texttt{Ocaml}, j'ai tout de même fait le choix d'ajouter ce constructeur pour uniformiser le type dans les autres déclarations. Ce choix est questionnable et présenta des désaventages lors du typage, rien d'insurmontable toutefois.
+On remarquera le constructeur d'expression \texttt{Etuple} qui est simplement une liste d'expression. Le langage \texttt{PetitGo} n'a pas de tuple comme \texttt{Ocaml}, j'ai tout de même fait le choix d'ajouter ce constructeur pour uniformiser le type dans les autres déclarations. Ce choix est questionnable et présenta des désaventages lors du typage, rien d'insurmontable pour autant.
 
-On notera de plus la présence du type $\alpha$ \texttt{loc} plusieurs fois dans les déclarations. Ce type est juste un enregistrement qui permet de se souvenir de la position des éléments retenu dans le fichier. Il est aussi déclaré dans le fichier \texttt{ast.ml}
+On notera de plus la présence du type $\alpha$ \texttt{loc} plusieurs fois dans les déclarations. Ce type est juste un enregistrement qui permet de se souvenir de la position des éléments retenu dans le fichier.
 
 \begin{verbatim}
 type 'a loc = { v : 'a; position : position }
@@ -106,9 +104,9 @@ type 'a loc = { v : 'a; position : position }
 
 \subsection{Le lexer et le parser}
 
-Il n'y a pas grand chose à dire sur ces parties du projets, elles sont une implémentation plus ou moins directe de la syntaxe décrite dans le sujet du projet.
+Il n'y a pas grand chose à dire sur ces parties du projets, elles sont une implémentation plus ou moins directe de la syntaxe décrite dans le sujet.
 
-Le point virgule automatique en fin de ligne est géré dans le lexer. J'ai utilisé une référence \texttt{is\_semi} indiquant s'il faut insérer un point virgule après le retour à la ligne ; la fonction \texttt{tok} pour la mettre un jour ; et \texttt{eol} pour insérer le retour à la ligne si besoin.
+Le point virgule automatique en fin de ligne est géré dans le lexer. J'ai utilisé une référence \texttt{is\_semi} indiquant s'il faut insérer un point virgule après le retour à la ligne ; une fonction \texttt{tok} pour la mettre un jour ; et une fonction \texttt{eol} pour insérer le retour à la ligne si besoin.
 
 \begin{verbatim}
 let is_semi = ref false
@@ -131,11 +129,16 @@ let tok t =
 
 \end{verbatim}
 
-J'ai légèrement étendu la syntaxe du \texttt{PetitGo} pour permettre d'utiliser des fonctions d'autres packages que \texttt{main} et \texttt{fmt} (voir section \ref{sec:pkg}).
+J'ai légèrement étendu la syntaxe du \texttt{PetitGo} pour permettre d'utiliser des fonctions d'autres packages que \texttt{main} et \texttt{fmt} (voir section \ref{sec:pkg}). Plus précisement les modifications sont les suivantes
+
+\begin{verbatim}
+<type> ::= <ident> | <ident> . <ident> | * <type>
+<expr> ::= <ident> . <ident> (<expr,>*) | ...
+\end{verbatim}
 
 \subsection{Le typage}
 
-L'implémentation du typage a été beaucoup plus longue que celle du parser et du lexer. J'ai commencé par définir un type représentant les types de valeurs possibles dans le fichier \texttt{ast.ml}
+L'implémentation du typeur a été beaucoup plus longue que celle du parser et du lexer. J'ai commencé par définir un type représentant les types de valeurs possibles dans le fichier \texttt{ast.ml}
 
 \begin{verbatim}
 type typ =
@@ -149,9 +152,9 @@ type typ =
 | Tref    of typ
 \end{verbatim}
 
-Je reviens ici rapidement sur le remarque que j'avais faite plus haut à propos du constructeur \texttt{Etuple} introduit dans les expressions. Sans ce constructeur, on pourrait se passer du contructeur \texttt{Tvoid} dans le type \texttt{typ}. En effet, une expression serait alors du type \texttt{typ list} et la liste vide représenterait le type \texttt{Tvoid}. Il est possible que cette modification simplifie quelques parties du code du typer mais je n'ai pas eu la volonté de la faire pour m'en faire une idée plus précise.
+Je reviens ici rapidement sur la remarque que j'ai faite en section \ref{sec:ast} à propos du constructeur \texttt{Etuple} introduit dans les expressions. Sans ce constructeur, on pourrait se passer du contructeur \texttt{Tvoid} dans le type \texttt{typ}. En effet, une expression serait alors du type \texttt{typ list} et la liste vide représenterait le type \texttt{Tvoid}. Il est possible que cette modification simplifie quelques parties du code du typeur mais je n'ai pas eu la volonté de la faire.
 
-Ensuite, j'ai redéfini un type d'ast \textit{typé} au début du fichier \texttt{typer.ml}.
+Ensuite, j'ai redéfini un type d'ast \textit{typé} dans le fichier \texttt{ast.ml}.
 
 \begin{verbatim}
 type texpr =
@@ -194,7 +197,7 @@ type env = {
 
 qui retient toutes les informations dont on peut avoir besoin à propos du programme pour pouvoir le compiler plus tard\footnote{du moins toute les informations que j'estime utiles pour l'instant, il est fort probable que viennent s'y ajouter de nouveaux champs plus tard dans le projet.}. Cet environnement est ensuite conservé dans une table globale, permettant de le retrouver rapidement, quand il est importé dans un autre package par exemple.
 
-\section{Quelques petites extentions du sujet}
+\section{Quelques petites extentions du sujet\label{sec:ext}}
 
 \subsection{Compiler plusieurs packages\label{sec:pkg}}
 
@@ -206,19 +209,21 @@ Pour pouvoir importer un autre fichier, il faut compiler ce dernier en même tem
 main.exe abr.go mon_programme.go
 \end{verbatim}
 
-On notera que les fichiers doivent être importés dans un bon ordre, sans quoi il ne sera pas correctement compilé. De plus, un fichier donne un package\footnote{contrairement à \texttt{Go} où on peut diviser un package en plusieurs fichiers} dont le nom est exactement celui donné au debut du fichier par la ligne.
+On notera que les fichiers doivent être importés dans un bon ordre, sans quoi ils ne seront pas compilé. De plus, un fichier définit un package\footnote{contrairement au langage \texttt{Go}} dont le nom est exactement celui donné au debut du fichier par la ligne
 
 \begin{verbatim}
 package abr
 \end{verbatim}
 
-Pour utiliser une fonction ou une structure du package importé, il faut les faire précéder du nom du package et d'un point. Comme, par exemple, dans le code suivant
+Le nom de ce package ne dépendra pas du nom du fichier ni de sa position relative dans l'arborescence de fichier\footnote{pas de package \texttt{math/rand} par exemple}.
+
+Pour utiliser une fonction ou une structure du package importé, il faut les faire précéder du nom du package et d'un point. Comme, par exemple, dans le code suivant utilisant le fichier de test \texttt{abr.go}
 
 \begin{verbatim}
-var dico *abr.BST = nil
-abr.add(&dico, 42)
-abr.add(&dico, -1)
-abr.print(dico); fmt.Print("\n")
+    var dico *abr.BST = nil
+    abr.add(&dico, 42)
+    abr.add(&dico, -1)
+    abr.print(dico); fmt.Print("\n")
 \end{verbatim}
 
 \subsection{Gestion des erreurs\label{sec:errors}}
@@ -233,7 +238,7 @@ exception Double_pos_error of position * position * string
 exception Cycle_struct of string list
 \end{verbatim}
 
-Lorsqu'une erreur survient, elle est localisé à un position du fichier passé en argument du compilateur. J'affiche donc la position au format demandé, suivit d'un message d'erreur et d'un petit bout du fichier correspondant au passage de l'erreur.
+Lorsqu'une erreur survient, elle est localisé à une position du fichier passé en argument du compilateur. J'affiche donc la position au format demandé, suivit d'un message d'erreur et d'un petit bout du fichier correspondant au passage de l'erreur.
 
 \begin{verbatim}
 File "typing/bad/testfile-leftvalue-2.go", line 3, characters 24-25:
@@ -244,7 +249,7 @@ Error: invalid argument for &: has to be a left value.
     -----------------------^--
 \end{verbatim}
 
-Parfois, on a plus d'information lors de l'erreur. Par exemple, lorsqu'une variable ou une structure est déclaré plusieurs fois.
+Parfois, on a plus d'information lors de l'erreur. Par exemple, lorsqu'une variable ou une structure est déclarée plusieurs fois.
 
 \begin{verbatim}
 File "typing/bad/testfile-redeclared-1.go", line 4, characters 6-7:
@@ -264,7 +269,7 @@ Error: a structure with name `T` already exists.
 
 Pour ces types d'erreurs, il peut y avoir un problème quand la seconde position est originairement d'un autre fichier. Le problème n'est pas très diffile à résoudre et le sera peut être d'ici janvier, mais compte tenu du peu de pertinence que cela avait pour le projet je ne l'ai pas fait pour l'instant.
 
-Quand l'erreur est sur un nom de variable (ou de structure ou de packages ou...) je regarde les nom existant celui qui est le plus proche\footnote{pour la distance minimum d'édition} et je propose un nom de variable qui pourrait convenir.
+Quand l'erreur est sur un nom de variable (ou de structure ou de packages ou...) je regarde parmis les noms existants celui qui est le plus proche\footnote{pour la distance minimum d'édition} et je propose un nom de variable qui pourrait convenir.
 
 \begin{verbatim}
 File "test.go", line 32, characters 7-8:
@@ -280,5 +285,7 @@ Hint: did you mean `add` ?
 \end{verbatim}
 
 \section{Conclusion, suite du projet et améliorations possibles}
+
+Mon typeur passe bien tous les tests. J'aurais aimé que le code soit moins long et plus simple par endroits mais j'en suis relativement satisfait. Bien que j'ai terminé le typage depuis une semaine environ, je n'ai pas encore commencé la production de code : préferant implémenter les fonctionnalitées décrites dans la section \ref{sec:ext}. Au regard de tout le travail à fournir pour la production de code, c'était sans doute une erreur. D'autant plus que ces deux extentions me semble, au final, assez peu pertinentes dans un projet de compilation (en tout cas pas aussi pertinente que l'utilisation efficace des registres et/ou d'un garbage collector). Cela dit, maintenant que c'est je ne pense pas qu'elles me poseront de difficultées particulières. Il faudra sans doute revoir les structures de données produites après le typage pour y ajouter des informations dont j'aurais besoin dans la production de code.
 
 \end{document}

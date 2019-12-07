@@ -41,6 +41,8 @@ let rec of_ty env = function
   | Tystruct (None, { v = "string" ; _ }) -> Tstring
   | Tystruct (None, s) -> unknown_type env s.position s.v
 
+(** Typing functions *)
+
 let rec type_binop info env op e1 e2 =
   let info, t1, te1 = type_expr info env e1 in
   let info, t2, te2 = type_expr info env e2 in

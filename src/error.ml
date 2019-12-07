@@ -3,6 +3,7 @@ open Lexing
 open Config
 open Ast
 
+(** Dynamic programming to find the minimum editing distance *)
 let minimum a b c =
   min a (min b c)
 
@@ -28,6 +29,10 @@ let editing_distance s t =
 
   d.(m).(n)
 
+(** Find the closest key to s in vs
+
+    If the distance between the closest key and v is over than 3,
+    we consider the information irrelevant *)
 let lookup s vs =
   Smap.fold (fun x _ acc ->
       let d = editing_distance s x in
@@ -138,6 +143,8 @@ let struct_already_exists p1 p2 s =
 
 exception Cycle_struct of string list
 let cycle_struct lst = raise (Cycle_struct lst)
+
+(** Pretty print errors functions *)
 
 let underline off l s e =
   for _ = 1 to off + 3 do printf " " done;
