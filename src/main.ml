@@ -3,9 +3,12 @@ open Config
 open Ast
 open Typer
 open Error
+open Compiler
+
+let compile_order = Queue.create ()
 
 (** Functions that parse and type a single file **)
-let compile file =
+let type_package file =
   ifile := file;
 
   if not (Filename.check_suffix file ".go")
@@ -32,13 +35,14 @@ let compile file =
 
     let env = type_prog empty_env pkg in
     all_packages := Smap.add pkg.p_name.v env !all_packages;
+    Queue.add pkg.p_name.v compile_order;
 
     close_in f;
     dbg "Done with %s.@." file;
   with e -> exit_with_error buf e
 
 let () =
-  Arg.parse options compile usage;
+  Arg.parse options type_package usage;
 
   if !ifile = ""
   then begin
@@ -68,6 +72,8 @@ let () =
           dbg "Type-only flag is on. If you want to compile, consider removing it.@.";
           exit 0;
         end;
+
+      compile_program compile_order
 
     with Not_found -> error "missing package main"
   with Error msg -> eprintf "Error: %s.@." msg; exit 1
