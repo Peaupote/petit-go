@@ -1,5 +1,5 @@
 _build/
-
+pgoc
 *.aux
 *.log
 *.out
