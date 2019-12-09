@@ -6,7 +6,7 @@ let verbose    = ref false
 let keep_asm   = ref false
 
 let ifile = ref ""
-let ofile = ref "a.out"
+let ofile = ref ""
 
 let options = [
     "--parse-only", Arg.Set parse_only,   " Stop execution after parsing";

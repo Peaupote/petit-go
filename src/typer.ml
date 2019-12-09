@@ -50,39 +50,39 @@ let rec type_binop info env op e1 e2 =
   match op with
   | Add | Sub | Div | Mul | Mod ->
      begin match t1, t2 with
-     | Tint, Tint -> info, typ Tint, Tbinop (op, te1, te2)
+     | Tint, Tint -> info, typ Tint, Tbinop (op, te1, te2, Tint)
      | _, Tint -> type_unexpected e1.position t1 Tint
      | _, _ -> type_unexpected e2.position t2 Tint end
   | Lt | Leq | Gt | Geq ->
      begin match t1, t2 with
-     | Tint, Tint -> info, typ Tbool, Tbinop (op, te1, te2)
+     | Tint, Tint -> info, typ Tbool, Tbinop (op, te1, te2, Tbool)
      | _, Tint -> type_unexpected e1.position t1 Tint
      | _, _ -> type_unexpected e2.position t2 Tint end
   | And | Or ->
      begin match t1, t2 with
-     | Tbool, Tbool -> info, typ Tbool, Tbinop (op, te1, te2)
+     | Tbool, Tbool -> info, typ Tbool, Tbinop (op, te1, te2, Tbool)
      | _, Tbool -> type_unexpected e1.position t1 Tbool
      | _, _ -> type_unexpected e2.position t2 Tbool end
   | Eq | Neq ->
      if te1 = Tenil && te2 = Tenil
      then nil_cmp_error e1.position;
      if typ_neq t1 t2 then type_unexpected e2.position t1 t2
-     else info, typ Tbool, Tbinop (op, te1, te2)
+     else info, typ Tbool, Tbinop (op, te1, te2, Tbool)
 
 and type_unop info env op e =
   let info, t, te = type_expr info env e in
   match op with
   | Not -> if t.t <> Tbool then type_unexpected e.position t.t Tbool
-          else info, typ Tbool, Tunop (op, te)
+          else info, typ Tbool, Tunop (op, te, Tbool)
   | Ref -> if not t.left
           then invalid_argument e.position "&" "has to be a left value"
-          else info, typ (Tref t.t), Tunop (op, te)
+          else info, typ (Tref t.t), Tunop (op, te, Tref t.t)
   | Deref -> if t.t = Tnil
             then error_left_value e.position "*"
             else if not t.left
             then error_left_value e.position "*"
             else match t.t with
-                 | Tref t -> info, ltyp t, Tunop (op, te)
+                 | Tref t -> info, ltyp t, Tunop (op, te, t)
                  | _ -> invalid_argument e.position "*"
                          (asprintf "type %a is not a reference" pp_typ t.t)
 
@@ -108,11 +108,12 @@ and resolve_attr_type info env id te e = function
   | Tstruct s ->
      begin
        try let fields = Smap.find s env.structs in
-           info, ltyp (Smap.find id.v fields), Tattr(te, id.v)
+           let tau = Smap.find id.v fields in
+           info, ltyp tau, Tattr(te, id.v, tau)
        with Not_found -> unknown_field env id.position s id.v
      end
   | Tref r -> let info, t, te = resolve_attr_type info env id te e r in
-             info, ltyp t.t, Tunop(Ref, te)
+             info, ltyp t.t, Tunop(Ref, te, t.t)
   | t -> compile_error e.position
           (asprintf "this has type `%a` but a struct was expected"
              pp_typ t)
@@ -159,11 +160,11 @@ and type_expr info env el =
   | Eint i -> info, typ Tint, Teint i
   | Ebool b -> info, typ Tbool, Tebool b
   | Estring s -> info, typ Tstring, Testring s
-  | Eident "_" -> info, typ Tvoid, Tident "_"
+  | Eident "_" -> info, typ Tvoid, Tident ("_", Tnil)
   | Eident id ->
      begin
        try let t = Smap.find id env.vars in
-           used info id, ltyp t, Tident id
+           used info id, ltyp t, Tident (id, t)
        with Not_found -> unknown_var env el.position id
      end
   | Etuple es -> type_tuple info env es
@@ -215,11 +216,12 @@ and type_expr info env el =
   | Ecall (pkg, f, ({ v = Ecall(_, _, _); _ } as c) :: []) ->
      let info, t, te = type_expr info env c in
      let info, (ps_t, ret_t) = find_func info env pkg f in
+     let ret_t = ret ret_t in
      begin match t.t, ps_t with
-     | t, t' :: [] when typ_eq t t' -> info, typ (ret ret_t),
-                                 Tcall (rm pkg, f.v, te::[])
+     | t, t' :: [] when typ_eq t t' ->
+        info, typ ret_t, Tcall (rm pkg, f.v, te::[], ret_t)
      | Ttuple ts, ts' when List.for_all2 typ_eq ts ts' ->
-        info, typ (ret ret_t), Tcall (rm pkg, f.v, te::[])
+        info, typ ret_t, Tcall (rm pkg, f.v, te::[], ret_t)
      | t, t' -> type_unexpected c.position t (ret t')
      end
   | Ecall (pkg, f, ps) ->
@@ -237,7 +239,8 @@ and type_expr info env el =
          args_nb_error func_pos f.position f.v
            (List.length ps_t) (List.length ps)
      in
-     info, typ (ret ret_t), Tcall(rm pkg, f.v, tps)
+     let tau = ret ret_t in
+     info, typ tau, Tcall(rm pkg, f.v, tps, tau)
 
 (** Add a new variable of type ty to the environnement and
     remember in info that this is a local variable *)
@@ -297,7 +300,7 @@ and decl_case info env ids ty vs =
 and check_return_no_underscore te =
   match te with
   | Tetuple ts -> List.exists check_return_no_underscore ts
-  | Tident "_" -> true
+  | Tident ("_", _) -> true
   | _ -> false
 
 (** Type an instruction and returns

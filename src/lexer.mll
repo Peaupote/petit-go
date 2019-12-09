@@ -97,7 +97,7 @@ and string buf = parse
 | '"'                { STRING (Buffer.contents buf) |> tok }
 | '\\' '\\'          { Buffer.add_char buf '\\'; string buf lexbuf }
 | '\\' 'n'           { Buffer.add_char buf '\n'; string buf lexbuf }
-| '\\' 't'           { Buffer.add_char buf '\r'; string buf lexbuf }
+| '\\' 't'           { Buffer.add_char buf '\t'; string buf lexbuf }
 | '\\' '"'           { Buffer.add_char buf '"' ; string buf lexbuf }
 | [^ '"' '\\']+ as s { Buffer.add_string buf s; string buf lexbuf }
 | _ as c { lexing_error ("Illegal string character " ^ (Char.escaped c) ^ ".") }

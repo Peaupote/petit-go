@@ -123,12 +123,12 @@ type texpr =
 | Teint    of int64
 | Testring of string
 | Tebool   of bool
-| Tident   of ident
+| Tident   of ident * typ
 | Tetuple  of texpr list
-| Tattr    of texpr * ident
-| Tcall    of (ident option) * ident * texpr list
-| Tunop    of unop * texpr
-| Tbinop   of binop * texpr * texpr
+| Tattr    of texpr * ident * typ
+| Tcall    of (ident option) * ident * texpr list * typ
+| Tunop    of unop * texpr * typ
+| Tbinop   of binop * texpr * texpr * typ
 | Tprint   of texpr list
 | Tnew     of typ
 
