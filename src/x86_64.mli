@@ -358,3 +358,6 @@ val address: label list -> data
 
 val space: int -> data
   (** [space n] alloue [n] octets (valant 0) dans le segment de données *)
+
+val popn : int -> text
+val pushn : int -> text

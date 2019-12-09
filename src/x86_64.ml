@@ -317,3 +317,7 @@ let print_in_file ~file p =
   let fmt = formatter_of_out_channel c in
   print_program fmt p;
   close_out c
+
+
+let popn n = addq (imm n) !%rsp
+let pushn n = subq (imm n) !%rsp

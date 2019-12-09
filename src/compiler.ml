@@ -13,6 +13,12 @@ type cstruct = {
 
 let structs : (ident, cstruct) Hashtbl.t = Hashtbl.create 10
 
+let rec sizeof = function
+  | Tvoid | Tnil -> assert false
+  | Tstruct s -> let cstruct = Hashtbl.find structs s in cstruct.size
+  | Tint | Tbool | Tstring | Tref _ -> 8
+  | Ttuple ts -> List.fold_left (fun sum t -> (sizeof t) + sum) 0 ts
+
 let com s = if !verbose then comment s else nop
 
 module type Cmp = sig
@@ -65,7 +71,7 @@ let rec type_to_format = function
   | Tbool -> "%d"
   | Tstring -> "%s"
   | Ttuple _ -> assert false
-  | Tstruct id -> id ^ "@%d"
+  | Tstruct id -> id ^ "@%p"
   | Tref typ -> type_to_format typ
 
 let make_format ps =
@@ -87,12 +93,12 @@ type cexpr =
 | Cint     of int64
 | Cstring  of int
 | Cbool    of bool
-| Cident   of sident * typ
-| Cetuple  of cexpr list
-| Cattr    of cexpr * sident * typ
-| Ccall    of sident * cexpr list * typ
-| Cunop    of unop * cexpr * typ
-| Cbinop   of binop * cexpr * cexpr * typ
+| Cident   of sident
+| Ctuple   of cexpr list
+| Cattr    of cexpr * sident
+| Ccall    of sident * cexpr list
+| Cunop    of unop * cexpr
+| Cbinop   of binop * cexpr * cexpr
 | Cprint   of cexpr list * sident
 | Cnew     of cstruct
 
@@ -100,53 +106,91 @@ type cinstruction =
   Cnop
 | Cexpr   of cexpr
 | Casgn   of cexpr * cexpr
+| Cdecl   of sident list * cexpr
 | Cblock  of cinstruction list
-| Cdecl   of sident list * cstruct option * cexpr option
 | Creturn of cexpr
 | Cfor    of cexpr * cinstruction
 | Cif     of cexpr * cinstruction * cinstruction
 
 type sz_cinstruction = cinstruction * int
 
-let rec build_expr next = function
+let rec build_expr env next = function
   | Tenil -> Cnil, next
   | Teint i -> Cint i, next
   | Testring s -> Cstring (SSym.add strings s), next
   | Tebool b -> Cbool b, next
 
-  | Tbinop (op, e1, e2, t) ->
-     let ce1, sz1 = build_expr next e1 in
-     let ce2, sz2 = build_expr next e2 in
-     Cbinop (op, ce1, ce2, t), max sz1 sz2
+  | Tident (id, _) -> Cident (Smap.find id env), next
+  | Tetuple es ->
+     let ces, sz =
+       List.fold_left
+         (fun (ces, sz) e ->
+           let ce, s = build_expr env sz e in
+           ce :: ces, max s sz) (* max maybe useless *)
+         ([], next) es
+     in
+     Ctuple (List.rev ces), sz
 
-  | Tunop (op, e, t) ->
-     let ce, sz = build_expr next e in
-     Cunop (op, ce, t), sz
+  | Tbinop (op, e1, e2, _) ->
+     let ce1, sz1 = build_expr env next e1 in
+     let ce2, sz2 = build_expr env next e2 in
+     Cbinop (op, ce1, ce2), max sz1 sz2
+
+  | Tunop (op, e, _) ->
+     let ce, sz = build_expr env next e in
+     Cunop (op, ce), sz
 
   | Tprint es ->
      let fmt = FSym.add formats (make_format es) in
      let ces, sz =
        List.fold_left
          (fun (es, sz) e ->
-           let ce, s = build_expr next e in
+           let ce, s = build_expr env next e in
            ce :: es, max sz s) ([], 0) es
      in
      Cprint (ces, fmt), sz
+
   | _ -> assert false
 
-and build_instruction next = function
-  | Tnop -> Cnop, 0
+and add (env, ids, next) t id =
+  let sz = sizeof t in
+  let next = sz + next in
+  dbg "Add local var `%s` (size %d).@." id sz;
+  Smap.add id (-next) env, (-next) :: ids, next
+
+and add_vars env ids next = function
+  | Ttuple ts -> List.fold_left2 add (env, [], next) ts ids
+  | t -> List.fold_left (fun acc id -> add acc t id) (env, [], next) ids
+
+and build_instruction env next = function
+  | Tnop -> env, Cnop, next
   | Texpr e ->
-     let ce, sz = build_expr next e in
-     Cexpr ce, sz
+     let ce, sz = build_expr env next e in
+     env, Cexpr ce, sz
+
+  | Tdecl (ids, t, None) ->
+     let env, _, next = add_vars env ids next t in
+     env, Cnop, next
+
+  | Tdecl (ids, t, Some e) ->
+     let ce, next = build_expr env next e in
+     let env, ids, next = add_vars env ids next t in
+     env, Cdecl (ids, ce), next
+
+  | Tasgn (e1, e2) ->
+     let ce1, next = build_expr env next e1 in
+     let ce2, next = build_expr env next e2 in
+     env, Casgn (ce1, ce2), next
+
   | Tblock is ->
-     let cis, sz =
+     let env, cis, sz =
        List.fold_left
-         (fun (cis, sz) e ->
-           let ce, s = build_instruction next e in
-           ce :: cis, max s sz) ([], next) is
+         (fun (env, cis, sz) e ->
+           let env, ce, s = build_instruction env sz e in
+           env, ce :: cis, s) (env, [], next) is
      in
-     Cblock (List.rev cis), sz
+     env, Cblock (List.rev cis), sz
+
   | _ -> assert false
 
 and compile_binop = function
@@ -194,14 +238,22 @@ and compile_expr = function
   | Cbool false -> movq (imm 0) !% rax
   | Cstring c -> movq (ilab (SSym.lab c)) !%rax
 
-  | Cbinop (op, e1, e2, _) ->
+  | Cident i -> movq (ind ~ofs:i rbp) !%rax
+
+  | Ctuple es ->
+     List.fold_left
+       (fun code e -> code ++ compile_expr e ++ pushq !%rax)
+       nop (List.rev es)
+     ++ popq rax (* TODO : optimize *)
+
+  | Cbinop (op, e1, e2) ->
      com "binop" ++
      compile_expr e2 ++
        movq !%rax !%rbx ++
        compile_expr e1 ++
        compile_binop op
 
-  | Cunop (op, e, _) ->
+  | Cunop (op, e) ->
      com "unop" ++
        compile_expr e ++
        compile_unop op
@@ -220,26 +272,57 @@ and compile_expr = function
   | _ -> assert false
 
 and compile_instruction = function
+  | Cnop -> nop
   | Cexpr e -> compile_expr e
+
+  | Casgn (e1, e2) ->
+     let code = compile_expr e2 in
+     code ++
+     begin match e1 with
+     | Cident id -> movq !%rax (ind ~ofs:id rbp)
+     | _ -> assert false
+     end
+
+  | Cdecl (ids, ce) ->
+     let more = ref false in (* TODO : something better *)
+     let code = compile_expr ce in
+     List.fold_left
+       (fun code id ->
+         (if !more then code ++ popq rax else (more := true; code)) ++
+           movq !%rax (ind ~ofs:id rbp))
+       code ids
+
   | Cblock es ->
      List.fold_left (fun code i -> code ++ compile_instruction i)
        (com "compile new block") es
+
   | _ -> assert false
 
 let build env =
-  Smap.map (fun body -> let cast, _ = build_instruction 0 body in cast)
+  Smap.map
+    (fun body ->
+      let _, cast, fsz = build_instruction Smap.empty 0 body in
+      dbg "done (frame size %d).\n@." fsz;
+      cast, fsz)
     env.funcs_body
 
 let compile env =
   let funcs = build env in
   let cmain, cfuncs =
-    Smap.fold (fun fname body (cmain, cfuncs) ->
+    Smap.fold (fun fname (body, fsz) (cmain, cfuncs) ->
+        dbg "Generating assembly code for function `%s`.@." fname;
         if fname = "main"
-        then compile_instruction body, cfuncs
+        then pushn fsz ++
+               compile_instruction body ++
+               popn fsz, cfuncs
         else cmain,
              cfuncs ++
                label fname ++
-               compile_instruction body)
+               pushq !%rbp ++
+               movq !%rsp !%rbp ++
+               compile_instruction body ++
+               popn fsz ++
+               ret)
       funcs (nop, nop)
   in
   cmain, cfuncs
@@ -250,7 +333,7 @@ let compile_program compile_order =
   let code_main, code_funcs =
     Queue.fold
       (fun (code_main, code_funcs) pkg ->
-        dbg "Start compiling %s@." pkg;
+        dbg "Start compiling `%s`@." pkg;
         let cmain, cfuncs = compile (Smap.find pkg !all_packages) in
         code_main ++ cmain, code_funcs ++ cfuncs)
       (nop, nop) compile_order

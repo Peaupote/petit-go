@@ -137,7 +137,7 @@ type tinstruction =
 | Texpr   of texpr
 | Tasgn   of texpr * texpr
 | Tblock  of tinstruction list
-| Tdecl   of ident list * typ option * texpr option
+| Tdecl   of ident list * typ * texpr option
 | Treturn of texpr
 | Tfor    of texpr * tinstruction
 | Tif     of texpr * tinstruction * tinstruction

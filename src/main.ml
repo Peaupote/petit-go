@@ -73,6 +73,7 @@ let () =
           exit 0;
         end;
 
+      dbg "@.";
       compile_program compile_order
 
     with Not_found -> error "missing package main"

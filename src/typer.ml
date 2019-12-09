@@ -277,24 +277,24 @@ and decl_case info env ids ty vs =
            with Not_found ->
              let info, ids, env =
                List.fold_left (add_vars expect) (info, [], env) ids in
-             info, env, Tdecl (ids, Some expect, Some te)
+             info, env, Tdecl (ids, expect, Some te)
      end
   | None, _ when is_nil te -> untyped_nil vs.position
-  | None, Ttuple ts ->
+  | None, ((Ttuple ts) as t) ->
      begin try let info, ids, env =
                  List.fold_left2 add_vars2 (info, [], env) ts ids in
-         info, env, Tdecl (ids, None, Some te)
+         info, env, Tdecl (ids, t, Some te)
      with Invalid_argument _ ->
        decl_nb_error vs.position (List.length ts) (List.length ids)
      end
   | None, t ->
      let info, ids, env =
        List.fold_left (add_vars t) (info, [], env) ids in
-     info, env, Tdecl (ids, Some t, Some te)
+     info, env, Tdecl (ids, t, Some te)
   | Some expect, t when typ_eq t expect ->
      let info, ids, env =
        List.fold_left (add_vars expect) (info, [], env) ids in
-     info, env, Tdecl (ids, Some t, Some te)
+     info, env, Tdecl (ids, t, Some te)
   | Some expect, t -> type_unexpected vs.position t expect
 
 and check_return_no_underscore te =
@@ -313,12 +313,13 @@ and type_instruction info env = function
      let info, _, te = type_expr info env e in
      info, env, Texpr te
   | Idecl (ids, Some ty, None) ->
+     let t = of_ty env ty.v in
      let info, ids, env =
        List.fold_left
-         (add_vars (of_ty env ty.v))
+         (add_vars t)
          (info, [], env) ids
      in
-     info, env, Tdecl (ids, None, None)
+     info, env, Tdecl (ids, t, None)
   | Idecl (ids, ty, Some vs) -> decl_case info env ids ty vs
   | Idecl (ids, None, None) -> untyped_decl (List.hd ids).position
   | Iasgn (e1, e2) ->
