@@ -182,6 +182,14 @@ and build_instruction env next = function
      let ce2, next = build_expr env next e2 in
      env, Casgn (ce1, ce2), next
 
+  | Tif (e, i1, i2) ->
+     let ce, next = build_expr env next e in
+     let env, ci1, next = build_instruction env next i1 in
+     let env, ci2, next = build_instruction env next i2 in
+     env, Cif(ce, ci1, ci2), next
+
+  | Tfor _ -> assert false
+
   | Tblock is ->
      let env, cis, sz =
        List.fold_left
@@ -210,7 +218,7 @@ and compile_binop = function
   | Geq -> cmpq !%rbx !%rax ++ setge !%al
 
 and compile_unop = function
-  | Not -> testq (imm 1) !%rax ++ setne !%al
+  | Not -> testq !%rax !%rax ++ sete !%al
   | _ -> assert false
 
 and push_params code reg es =
@@ -246,6 +254,7 @@ and compile_expr = function
        nop (List.rev es)
      ++ popq rax (* TODO : optimize *)
 
+  (* TODO : lazy if boolean operators *)
   | Cbinop (op, e1, e2) ->
      com "binop" ++
      compile_expr e2 ++
@@ -271,6 +280,23 @@ and compile_expr = function
 
   | _ -> assert false
 
+and jump_if =
+  let nb_if = ref 0 in
+  let code ce ci1 ci2 =
+    incr nb_if;
+    let lab = "_" ^ string_of_int !nb_if in
+    com ("start if" ^ lab) ++
+      compile_expr ce ++
+      testq (imm 1) !%rax ++
+      je ("else" ^ lab) ++
+      compile_instruction ci1 ++
+      jmp ("endif" ^ lab) ++
+      label ("else" ^ lab) ++
+      compile_instruction ci2 ++
+      label ("endif" ^ lab)
+  in
+  code
+
 and compile_instruction = function
   | Cnop -> nop
   | Cexpr e -> compile_expr e
@@ -291,6 +317,8 @@ and compile_instruction = function
          (if !more then code ++ popq rax else (more := true; code)) ++
            movq !%rax (ind ~ofs:id rbp))
        code ids
+
+  | Cif (ce, ci1, ci2) -> jump_if ce ci1 ci2
 
   | Cblock es ->
      List.fold_left (fun code i -> code ++ compile_instruction i)
