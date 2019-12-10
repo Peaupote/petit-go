@@ -109,7 +109,7 @@ and resolve_attr_type info env id te e = function
      begin
        try let fields = Smap.find s env.structs in
            let tau = Smap.find id.v fields in
-           info, ltyp tau, Tattr(te, id.v, tau)
+           info, ltyp tau, Tattr(te, s, id.v, tau)
        with Not_found -> unknown_field env id.position s id.v
      end
   | Tref r -> let info, t, te = resolve_attr_type info env id te e r in

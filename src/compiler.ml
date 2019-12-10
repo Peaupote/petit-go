@@ -19,6 +19,14 @@ let rec sizeof = function
   | Tint | Tbool | Tstring | Tref _ -> 8
   | Ttuple ts -> List.fold_left (fun sum t -> (sizeof t) + sum) 0 ts
 
+let compile_struct s =
+  let size, fields =
+    Smap.fold (fun id t (sz, cstruct) ->
+        sizeof t + sz, Smap.add id sz cstruct)
+      s (0, Smap.empty)
+  in
+  { size = size; fields = fields }
+
 let com s = if !verbose then comment s else nop
 
 module type Cmp = sig
@@ -64,6 +72,12 @@ let formats : (int, string) FSym.t = FSym.create "format" 10
 let preg = [rdi; rsi; rdx; rcx; r8; r9]
 
 (** Create a format *)
+let escaped_string buf s =
+  String.iter (fun c ->
+      if c = '%'
+      then Buffer.add_string buf "%%"
+      else Buffer.add_char buf c) s
+
 let rec type_to_format = function
   | Tvoid -> assert false
   | Tnil -> assert false
@@ -71,7 +85,7 @@ let rec type_to_format = function
   | Tbool -> "%d"
   | Tstring -> "%s"
   | Ttuple _ -> assert false
-  | Tstruct id -> id ^ "@%p"
+  | Tstruct id -> id ^ "@{TODO}"
   | Tref typ -> type_to_format typ
 
 let make_format ps =
@@ -80,9 +94,9 @@ let make_format ps =
       match p with
       | Tenil -> Buffer.add_string buf "nil"
       | Teint i -> Buffer.add_string buf (Int64.to_string i)
-      | Testring s -> Buffer.add_string buf s
+      | Testring s -> escaped_string buf s
       | Tebool b -> Buffer.add_string buf (string_of_bool b)
-      | Tident (_, t) | Tattr (_, _, t) | Tunop (_, _, t)
+      | Tident (_, t) | Tattr (_, _, _, t) | Tunop (_, _, t)
         | Tbinop (_, _, _, t) | Tcall (_, _, _, t) | Tnew t ->
          Buffer.add_string buf (type_to_format t)
       | Tetuple _ | Tprint _ -> assert false) ps;
@@ -94,6 +108,7 @@ type cexpr =
 | Cstring  of int
 | Cbool    of bool
 | Cident   of sident
+| Cstruct  of sident
 | Ctuple   of cexpr list
 | Cattr    of cexpr * sident
 | Ccall    of sident * cexpr list
@@ -120,6 +135,7 @@ let rec build_expr env next = function
   | Testring s -> Cstring (SSym.add strings s), next
   | Tebool b -> Cbool b, next
 
+  | Tident (id, Tstruct _) -> Cstruct (Smap.find id env), next
   | Tident (id, _) -> Cident (Smap.find id env), next
   | Tetuple es ->
      let ces, sz =
@@ -130,6 +146,11 @@ let rec build_expr env next = function
          ([], next) es
      in
      Ctuple (List.rev ces), sz
+
+  | Tattr (e, sname, id, _) ->
+     let ce, next = build_expr env next e in
+     let cstruct = Hashtbl.find structs sname in
+     Cattr (ce, Smap.find id cstruct.fields), next
 
   | Tbinop (op, e1, e2, _) ->
      let ce1, sz1 = build_expr env next e1 in
@@ -188,10 +209,13 @@ and build_instruction env next = function
      let env, ci2, next = build_instruction env next i2 in
      env, Cif(ce, ci1, ci2), next
 
-  | Tfor _ -> assert false
+  | Tfor (e, i) ->
+     let ce, next = build_expr env next e in
+     let _, ci, next = build_instruction env next i in
+     env, Cfor (ce, ci), next
 
   | Tblock is ->
-     let env, cis, sz =
+     let _, cis, sz =
        List.fold_left
          (fun (env, cis, sz) e ->
            let env, ce, s = build_instruction env sz e in
@@ -209,7 +233,8 @@ and compile_binop = function
   (* ! parameter in rdx *)
   (* TODO : shift when power of 2 *)
   | Mod -> cqto ++ idivq !%rbx ++ movq !%rdx !%rax
-  | And | Eq -> andq !%rbx !%rax
+  | And -> andq !%rbx !%rax
+  | Eq -> cmpq !%rbx !%rax ++ sete !%al
   | Neq -> cmpq !%rbx !%rax ++ setne !%al
   | Or -> orq !%rbx !%rax
   | Lt -> cmpq !%rbx !%rax ++ setl !%al
@@ -247,12 +272,18 @@ and compile_expr = function
   | Cstring c -> movq (ilab (SSym.lab c)) !%rax
 
   | Cident i -> movq (ind ~ofs:i rbp) !%rax
+  | Cstruct i -> leaq (ind ~ofs:i rbp) rax
 
   | Ctuple es ->
      List.fold_left
        (fun code e -> code ++ compile_expr e ++ pushq !%rax)
        nop (List.rev es)
      ++ popq rax (* TODO : optimize *)
+
+  | Cattr (ce, id) ->
+     com "attr" ++
+       compile_expr ce ++
+       movq (ind ~ofs:id rax) !%rax
 
   (* TODO : lazy if boolean operators *)
   | Cbinop (op, e1, e2) ->
@@ -297,15 +328,38 @@ and jump_if =
   in
   code
 
+and jump_loop =
+  let nb_loop = ref 0 in
+  let code ce ci =
+    incr nb_loop;
+    let lab = "_" ^ string_of_int !nb_loop in
+    com ("start loop" ^ lab) ++
+      label ("loop" ^ lab) ++
+      compile_expr ce ++
+      testq (imm 1) !%rax ++
+      je ("end_loop" ^ lab) ++
+      compile_instruction ci ++
+      jmp ("loop" ^ lab) ++
+      label ("end_loop" ^ lab)
+  in
+  code
+
 and compile_instruction = function
   | Cnop -> nop
   | Cexpr e -> compile_expr e
 
   | Casgn (e1, e2) ->
-     let code = compile_expr e2 in
-     code ++
+     com "asgn" ++
      begin match e1 with
-     | Cident id -> movq !%rax (ind ~ofs:id rbp)
+     | Cident id | Cstruct id ->
+        compile_expr e2 ++
+          movq !%rax (ind ~ofs:id rbp)
+     | Cattr (ce, id) ->
+        compile_expr ce ++
+          pushq !%rax ++
+          compile_expr e2 ++
+          popq rbx ++
+          movq !%rax (ind ~ofs:id rbx)
      | _ -> assert false
      end
 
@@ -320,6 +374,8 @@ and compile_instruction = function
 
   | Cif (ce, ci1, ci2) -> jump_if ce ci1 ci2
 
+  | Cfor (ce, ci) -> jump_loop ce ci
+
   | Cblock es ->
      List.fold_left (fun code i -> code ++ compile_instruction i)
        (com "compile new block") es
@@ -327,6 +383,11 @@ and compile_instruction = function
   | _ -> assert false
 
 let build env =
+  Smap.iter
+    (fun name s ->
+      let cs = compile_struct s in
+      dbg "Compile structure `%s` (size %d).@." name cs.size;
+      Hashtbl.add structs name cs) env.structs;
   Smap.map
     (fun body ->
       let _, cast, fsz = build_instruction Smap.empty 0 body in

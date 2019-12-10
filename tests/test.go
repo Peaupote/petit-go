@@ -1,19 +1,27 @@
 package main
 import "fmt"
 
+type PGF2 struct { a0, a1 bool }
+type gauss struct { r, i int }
+
 func main() {
-	var y, z = 2, 3
-	x := 1
+	var one, i, b gauss
+	one.r = 1
+	one.i = 0
 
-	fmt.Print("x ", x, "\n")
-	fmt.Print("y ", y, "\n")
-	fmt.Print("z ", z, "\n")
+	i.r = 0
+	i.i = 1
 
-	cond := !false
-	fmt.Print("cond ", cond, "\n")
-	if cond {
-		fmt.Print("yay\n")
-	} else {
-		fmt.Print("ohh\n")
+	b.r = i.r + one.r
+	b.i = i.i + one.i
+
+	if i.r == 0 {
+		fmt.Print("i is pure imaginary\n")
 	}
+
+	if one.r != 0 {
+		fmt.Print("one is not pure imaginary\n")
+	}
+
+	fmt.Print("b: (", b.r, ", ", b.i, ")\n")
 }
