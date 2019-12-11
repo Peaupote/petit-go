@@ -78,7 +78,7 @@ let escaped_string buf s =
       then Buffer.add_string buf "%%"
       else Buffer.add_char buf c) s
 
-let rec type_to_format = function
+let type_to_format = function
   | Tvoid -> assert false
   | Tnil -> assert false
   | Tint -> "%d"
@@ -86,7 +86,7 @@ let rec type_to_format = function
   | Tstring -> "%s"
   | Ttuple _ -> assert false
   | Tstruct id -> id ^ "@{TODO}"
-  | Tref typ -> type_to_format typ
+  | Tref _ -> "%p"
 
 let make_format ps =
   let buf = Buffer.create 10 in
@@ -108,24 +108,25 @@ type cexpr =
 | Cstring  of int
 | Cbool    of bool
 | Cident   of sident
-| Cstruct  of sident
+| Cref     of cexpr
 | Ctuple   of cexpr list
 | Cattr    of cexpr * sident
 | Ccall    of sident * cexpr list
 | Cunop    of unop * cexpr
 | Cbinop   of binop * cexpr * cexpr
 | Cprint   of cexpr list * sident
-| Cnew     of cstruct
+| Cnew     of int * typ
 
 type cinstruction =
   Cnop
-| Cexpr   of cexpr
-| Casgn   of cexpr * cexpr
-| Cdecl   of sident list * cexpr
-| Cblock  of cinstruction list
-| Creturn of cexpr
-| Cfor    of cexpr * cinstruction
-| Cif     of cexpr * cinstruction * cinstruction
+| Cexpr    of cexpr
+| Casgn    of cexpr * cexpr
+| Cdefault of sident list * typ
+| Cdecl    of sident list * cexpr
+| Cblock   of cinstruction list
+| Creturn  of cexpr
+| Cfor     of cexpr * cinstruction
+| Cif      of cexpr * cinstruction * cinstruction
 
 type sz_cinstruction = cinstruction * int
 
@@ -135,7 +136,6 @@ let rec build_expr env next = function
   | Testring s -> Cstring (SSym.add strings s), next
   | Tebool b -> Cbool b, next
 
-  | Tident (id, Tstruct _) -> Cstruct (Smap.find id env), next
   | Tident (id, _) -> Cident (Smap.find id env), next
   | Tetuple es ->
      let ces, sz =
@@ -157,6 +157,10 @@ let rec build_expr env next = function
      let ce2, sz2 = build_expr env next e2 in
      Cbinop (op, ce1, ce2), max sz1 sz2
 
+  | Tunop (Ref, e, _) ->
+     let ce, next = build_expr env next e in
+     Cref ce, next
+
   | Tunop (op, e, _) ->
      let ce, sz = build_expr env next e in
      Cunop (op, ce), sz
@@ -171,7 +175,9 @@ let rec build_expr env next = function
      in
      Cprint (ces, fmt), sz
 
-  | _ -> assert false
+  | Tnew t -> Cnew (sizeof t, t), next
+
+  | Tcall _ -> assert false
 
 and add (env, ids, next) t id =
   let sz = sizeof t in
@@ -190,8 +196,8 @@ and build_instruction env next = function
      env, Cexpr ce, sz
 
   | Tdecl (ids, t, None) ->
-     let env, _, next = add_vars env ids next t in
-     env, Cnop, next
+     let env, ids, next = add_vars env ids next t in
+     env, Cdefault (ids, t), next
 
   | Tdecl (ids, t, Some e) ->
      let ce, next = build_expr env next e in
@@ -244,7 +250,8 @@ and compile_binop = function
 
 and compile_unop = function
   | Not -> testq !%rax !%rax ++ sete !%al
-  | _ -> assert false
+  | Deref -> movq (ind rax) !%rax
+  | Ref -> assert false
 
 and push_params code reg es =
   match reg, es with
@@ -272,7 +279,7 @@ and compile_expr = function
   | Cstring c -> movq (ilab (SSym.lab c)) !%rax
 
   | Cident i -> movq (ind ~ofs:i rbp) !%rax
-  | Cstruct i -> leaq (ind ~ofs:i rbp) rax
+  | Cref ce -> compile_left ce
 
   | Ctuple es ->
      List.fold_left
@@ -282,15 +289,16 @@ and compile_expr = function
 
   | Cattr (ce, id) ->
      com "attr" ++
-       compile_expr ce ++
+       compile_left ce ++
        movq (ind ~ofs:id rax) !%rax
 
   (* TODO : lazy if boolean operators *)
   | Cbinop (op, e1, e2) ->
      com "binop" ++
-     compile_expr e2 ++
-       movq !%rax !%rbx ++
+       compile_expr e2 ++
+       pushq !%rax ++
        compile_expr e1 ++
+       popq rbx ++
        compile_binop op
 
   | Cunop (op, e) ->
@@ -309,6 +317,29 @@ and compile_expr = function
        movq (ilab (FSym.lab fmt)) !%rdi ++
        movq (imm 0) !%rax ++ call "printf"
 
+  | Cnew (sz, t) ->
+     movq (imm sz) !%rdi ++
+       call "malloc" ++
+       initialize_mem 0 rax t
+
+  | Ccall _ -> assert false
+
+(* put write address in rax *)
+and compile_left = function
+  | Cident id ->
+     leaq (ind ~ofs:id rbp) rax
+
+  | Cattr (ce, id) ->
+     compile_left ce ++
+       leaq (ind ~ofs:id rax) rax
+
+  | Cunop(Deref, ce) ->
+     compile_left ce ++
+       movq (ind rax) !%rax
+
+  | Cref ce ->
+     compile_left ce
+
   | _ -> assert false
 
 and jump_if =
@@ -319,12 +350,12 @@ and jump_if =
     com ("start if" ^ lab) ++
       compile_expr ce ++
       testq (imm 1) !%rax ++
-      je ("else" ^ lab) ++
+      je (".else" ^ lab) ++
       compile_instruction ci1 ++
-      jmp ("endif" ^ lab) ++
-      label ("else" ^ lab) ++
+      jmp (".endif" ^ lab) ++
+      label (".else" ^ lab) ++
       compile_instruction ci2 ++
-      label ("endif" ^ lab)
+      label (".endif" ^ lab)
   in
   code
 
@@ -334,15 +365,26 @@ and jump_loop =
     incr nb_loop;
     let lab = "_" ^ string_of_int !nb_loop in
     com ("start loop" ^ lab) ++
-      label ("loop" ^ lab) ++
+      label (".loop" ^ lab) ++
       compile_expr ce ++
       testq (imm 1) !%rax ++
-      je ("end_loop" ^ lab) ++
+      je (".end_loop" ^ lab) ++
       compile_instruction ci ++
-      jmp ("loop" ^ lab) ++
-      label ("end_loop" ^ lab)
+      jmp (".loop" ^ lab) ++
+      label (".end_loop" ^ lab)
   in
   code
+
+and initialize_mem ofs reg = function
+  | Tint | Tbool | Tref _ ->
+     movq (imm 0) (ind ~ofs:ofs reg)
+  | (Tstruct _) as t ->
+     let n = (sizeof t) / 8 in
+     let rec aux i code =
+       if i = n then code
+       else aux (i+1) (code ++ movq (imm 0) (ind ~ofs:(ofs + 8 * i) reg)) in
+     aux 0 nop
+  | _ -> assert false
 
 and compile_instruction = function
   | Cnop -> nop
@@ -350,22 +392,20 @@ and compile_instruction = function
 
   | Casgn (e1, e2) ->
      com "asgn" ++
-     begin match e1 with
-     | Cident id | Cstruct id ->
-        compile_expr e2 ++
-          movq !%rax (ind ~ofs:id rbp)
-     | Cattr (ce, id) ->
-        compile_expr ce ++
-          pushq !%rax ++
-          compile_expr e2 ++
-          popq rbx ++
-          movq !%rax (ind ~ofs:id rbx)
-     | _ -> assert false
-     end
+       compile_expr e2 ++
+       pushq !%rax ++
+       compile_left e1 ++
+       popq rbx ++
+       movq !%rbx (ind rax)
+
+  | Cdefault (ids, t) ->
+     List.fold_left
+       (fun code id -> code ++ initialize_mem id rbp t)
+       (com "default values") ids
 
   | Cdecl (ids, ce) ->
      let more = ref false in (* TODO : something better *)
-     let code = compile_expr ce in
+     let code = com "declare" ++ compile_expr ce in
      List.fold_left
        (fun code id ->
          (if !more then code ++ popq rax else (more := true; code)) ++
@@ -416,7 +456,9 @@ let compile env =
   in
   cmain, cfuncs
 
-let gcc_command = "gcc -g -no-pie %s -o %s" ^^ ""
+let gcc_command () =
+  "gcc -g -no-pie %s -o %s" ^^
+    (if !verbose then "" else " 1&>2 2>/dev/null")
 
 let compile_program compile_order =
   let code_main, code_funcs =
@@ -447,7 +489,7 @@ let compile_program compile_order =
 
   let asm_file =
     if not (!keep_asm)
-    then Filename.temp_file "petitgo" (!ofile ^ ".s")
+    then Filename.temp_file "petitgo" ((Filename.basename !ofile) ^ ".s")
     else sprintf "%s.s" !ofile in
 
   dbg "Assembly code fully generated.@.";
@@ -458,14 +500,14 @@ let compile_program compile_order =
   close_out f;
 
   dbg "Compile assembly code with gcc.@.";
-  let cmd = sprintf gcc_command asm_file !ofile in
+  let cmd = sprintf (gcc_command ()) asm_file !ofile in
   dbg "> %s@." cmd;
 
   let _ =
     try Sys.command cmd
-    with Sys_error msg ->
-      eprintf "An unexpected error occured while calling gcc: %s.@." msg;
-      eprintf "Use option -v for more information.@.";
+    with Sys_error _ ->
+      eprintf "An unexpected error occured while calling gcc.@.";
+      eprintf "For more information try using -v option.@.";
       exit 2
   in
 

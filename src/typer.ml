@@ -104,19 +104,23 @@ and type_tuple info env lst =
 
 (** Follow references until found a structure on which
     we want to get attribute id *)
-and resolve_attr_type info env id te e = function
-  | Tstruct s ->
-     begin
-       try let fields = Smap.find s env.structs in
-           let tau = Smap.find id.v fields in
-           info, ltyp tau, Tattr(te, s, id.v, tau)
-       with Not_found -> unknown_field env id.position s id.v
-     end
-  | Tref r -> let info, t, te = resolve_attr_type info env id te e r in
-             info, ltyp t.t, Tunop(Ref, te, t.t)
-  | t -> compile_error e.position
-          (asprintf "this has type `%a` but a struct was expected"
-             pp_typ t)
+and resolve_attr_type info env id te e t =
+  let rec aux = function
+    | Tstruct s ->
+       begin
+         try let fields = Smap.find s env.structs in
+             let tau = Smap.find id.v fields in
+             info, tau, s, te
+         with Not_found -> unknown_field env id.position s id.v
+       end
+    | (Tref r) as t -> let info, tau, s, te = aux r in
+                      info, tau, s, Tunop (Ref, te, t)
+    | t -> compile_error e.position
+            (asprintf "this has type `%a` but a struct was expected"
+               pp_typ t)
+  in
+  let info, tau, s, te = aux t in
+  info, ltyp tau, Tattr(te, s, id.v, tau)
 
 (** Look for the function f in the package pkg
     Mark the package as used if f exists *)
@@ -372,7 +376,11 @@ and type_instruction info env = function
              (fun x -> x <> "_" && not (Vset.mem x sinfo.used_vars))
              sinfo.local_vars
          in
-         unused_var pos v
+         if !allow_unused_var
+         then begin warn "unused variable %s.@." v;
+                    merge info sinfo, env, Tblock (List.rev tis)
+              end
+         else unused_var pos v
      with Not_found -> merge info sinfo, env, Tblock (List.rev tis)
 
 (** Check that function declaration is correct **)
@@ -504,9 +512,12 @@ let type_prog env prog =
       (info, env) prog.p_functions in
 
   (* Look for unused packages *)
-  Smap.iter (fun p pos -> if not (Vset.mem p info.used_pkg)
-                         then unused_pkg pos p)
-    info.pkg_pos;
+  Smap.iter (fun p pos ->
+      if not (Vset.mem p info.used_pkg)
+      then if !allow_unused_package
+           then warn "unused package %s@." p
+           else unused_pkg pos p)
+         info.pkg_pos;
 
   all_info_packages := Smap.add prog.p_name.v info !all_info_packages;
 
