@@ -194,6 +194,7 @@ and initialize_mem ofs reg = function
        if i = n then code
        else aux (i+1) (code ++ movq (imm 0) (ind ~ofs:(ofs + 8 * i) reg)) in
      aux 0 nop
+  | Tstring -> movq (ilab (empty_string ())) (ind ~ofs:ofs reg)
   | _ -> assert false
 
 and compile_instruction = function

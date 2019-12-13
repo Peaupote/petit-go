@@ -301,7 +301,7 @@ and decl_case info env ids ty vs =
   | Some expect, t when typ_eq t expect ->
      let info, ids, env =
        List.fold_left (add_vars expect) (info, [], env) ids in
-     info, env, Tdecl (ids, t, Some te)
+     info, env, Tdecl (ids, expect, Some te)
   | Some expect, t -> type_unexpected vs.position t expect
 
 and check_return_no_underscore te =

@@ -101,18 +101,27 @@ let type_to_format = function
   | Tref _ -> "%s"
 
 let make_format ps =
+  let prev = ref Tstring in
   let buf = Buffer.create 10 in
   let typs, es =
     List.fold_left (fun (typs, es) p ->
         match p with
-        | Tenil -> Buffer.add_string buf "nil"; typs, es
-        | Teint i -> Buffer.add_string buf (Int64.to_string i); typs, es
-        | Testring s -> escaped_string buf s; typs, es
-        | Tebool b -> Buffer.add_string buf (string_of_bool b); typs, es
+        | Tenil -> Buffer.add_string buf "<nil>"; typs, es
+        | Teint i ->
+           if !prev <> Tstring then Buffer.add_char buf ' ';
+           Buffer.add_string buf (Int64.to_string i);
+           prev := Tint; typs, es
+        | Testring s -> escaped_string buf s; prev := Tstring; typs, es
+        | Tebool b ->
+           if !prev <> Tstring then Buffer.add_char buf ' ';
+           Buffer.add_string buf (string_of_bool b);
+           prev := Tbool; typs, es
         | Tident (_, t) | Tattr (_, _, _, t) | Tunop (_, _, t)
           | Tbinop (_, _, _, t) | Tcall (_, _, _, t) | Tnew t ->
            Buffer.add_string buf (type_to_format t);
-           t :: typs, p :: es
+           if t <> Tstring && !prev <> Tstring
+           then Buffer.add_char buf ' ';
+           prev := t; t :: typs, p :: es
         | Tetuple _ | Tprint _ -> assert false) ([], []) ps
   in
   List.rev typs, List.rev es, Buffer.contents buf
@@ -199,6 +208,7 @@ and build_instruction env next = function
      env, Cdefault (ids, t), next
 
   | Tdecl (ids, t, Some e) ->
+     printf "here type %a@." pp_typ t;
      let ce = build_expr env e in
      let env, ids, next = add_vars env ids next t in
      env, Cdecl (ids, ce), next
