@@ -2,244 +2,24 @@ open Format
 open Config
 open X86_64
 open Ast
-
-(** Stack ident *)
-type sident = int
-
-type cstruct = {
-    size : int;
-    fields : sident Smap.t
-  }
-
-let structs : (ident, cstruct) Hashtbl.t = Hashtbl.create 10
-
-let rec sizeof = function
-  | Tvoid | Tnil -> assert false
-  | Tstruct s -> let cstruct = Hashtbl.find structs s in cstruct.size
-  | Tint | Tbool | Tstring | Tref _ -> 8
-  | Ttuple ts -> List.fold_left (fun sum t -> (sizeof t) + sum) 0 ts
-
-let compile_struct s =
-  let size, fields =
-    Smap.fold (fun id t (sz, cstruct) ->
-        sizeof t + sz, Smap.add id sz cstruct)
-      s (0, Smap.empty)
-  in
-  { size = size; fields = fields }
+open Builder
 
 let com s = if !verbose then comment s else nop
-
-module type Cmp = sig
-  type t
-  val compare : t -> t -> int
-end
-
-module MakeSym (M : Cmp) = struct
-  include Hashtbl
-
-  let prefix = ref ""
-
-  let lab x = sprintf ".%s_%d" !prefix x
-
-  let create p n = prefix := p; create n
-  let stored : (string, int) Hashtbl.t = Hashtbl.create 10
-
-  let c = ref 0
-  let add tbl v =
-    try let c = find stored v in
-        dbg "%s already in .data, don't create new symbol@."
-          (String.capitalize_ascii !prefix);
-        c
-    with Not_found ->
-      incr c;
-      dbg "Add %s `%s` in .data.@." !prefix (lab !c);
-      replace tbl !c v;
-      replace stored v !c;
-      !c
-
-  let symbols tbl =
-    fold (fun x s l -> label (lab x) ++ string s ++ l) tbl nop
-
-end
-
-module SSym = MakeSym(String)
-module FSym = MakeSym(String)
-
-let strings : (int, string) SSym.t = SSym.create "string" 10
-let formats : (int, string) FSym.t = FSym.create "format" 10
 
 (** Registers for parameters *)
 let preg = [rdi; rsi; rdx; rcx; r8; r9]
 
-(** Create a format *)
-let escaped_string buf s =
-  String.iter (fun c ->
-      if c = '%'
-      then Buffer.add_string buf "%%"
-      else Buffer.add_char buf c) s
-
-let type_to_format = function
-  | Tvoid -> assert false
-  | Tnil -> assert false
-  | Tint -> "%d"
-  | Tbool -> "%d"
-  | Tstring -> "%s"
-  | Ttuple _ -> assert false
-  | Tstruct id -> id ^ "@{TODO}"
-  | Tref _ -> "%p"
-
-let make_format ps =
-  let buf = Buffer.create 10 in
-  List.iter (fun p ->
-      match p with
-      | Tenil -> Buffer.add_string buf "nil"
-      | Teint i -> Buffer.add_string buf (Int64.to_string i)
-      | Testring s -> escaped_string buf s
-      | Tebool b -> Buffer.add_string buf (string_of_bool b)
-      | Tident (_, t) | Tattr (_, _, _, t) | Tunop (_, _, t)
-        | Tbinop (_, _, _, t) | Tcall (_, _, _, t) | Tnew t ->
-         Buffer.add_string buf (type_to_format t)
-      | Tetuple _ | Tprint _ -> assert false) ps;
-  Buffer.contents buf
-
-type cexpr =
-  Cnil
-| Cint     of int64
-| Cstring  of int
-| Cbool    of bool
-| Cident   of sident
-| Cref     of cexpr
-| Ctuple   of cexpr list
-| Cattr    of cexpr * sident
-| Ccall    of sident * cexpr list
-| Cunop    of unop * cexpr
-| Cbinop   of binop * cexpr * cexpr
-| Cprint   of cexpr list * sident
-| Cnew     of int * typ
-
-type cinstruction =
-  Cnop
-| Cexpr    of cexpr
-| Casgn    of cexpr * cexpr
-| Cdefault of sident list * typ
-| Cdecl    of sident list * cexpr
-| Cblock   of cinstruction list
-| Creturn  of cexpr
-| Cfor     of cexpr * cinstruction
-| Cif      of cexpr * cinstruction * cinstruction
-
-type sz_cinstruction = cinstruction * int
-
-let rec build_expr env next = function
-  | Tenil -> Cnil, next
-  | Teint i -> Cint i, next
-  | Testring s -> Cstring (SSym.add strings s), next
-  | Tebool b -> Cbool b, next
-
-  | Tident (id, _) -> Cident (Smap.find id env), next
-  | Tetuple es ->
-     let ces, sz =
-       List.fold_left
-         (fun (ces, sz) e ->
-           let ce, s = build_expr env sz e in
-           ce :: ces, max s sz) (* max maybe useless *)
-         ([], next) es
-     in
-     Ctuple (List.rev ces), sz
-
-  | Tattr (e, sname, id, _) ->
-     let ce, next = build_expr env next e in
-     let cstruct = Hashtbl.find structs sname in
-     Cattr (ce, Smap.find id cstruct.fields), next
-
-  | Tbinop (op, e1, e2, _) ->
-     let ce1, sz1 = build_expr env next e1 in
-     let ce2, sz2 = build_expr env next e2 in
-     Cbinop (op, ce1, ce2), max sz1 sz2
-
-  | Tunop (Ref, e, _) ->
-     let ce, next = build_expr env next e in
-     Cref ce, next
-
-  | Tunop (op, e, _) ->
-     let ce, sz = build_expr env next e in
-     Cunop (op, ce), sz
-
-  | Tprint es ->
-     let fmt = FSym.add formats (make_format es) in
-     let ces, sz =
-       List.fold_left
-         (fun (es, sz) e ->
-           let ce, s = build_expr env next e in
-           ce :: es, max sz s) ([], 0) es
-     in
-     Cprint (ces, fmt), sz
-
-  | Tnew t -> Cnew (sizeof t, t), next
-
-  | Tcall _ -> assert false
-
-and add (env, ids, next) t id =
-  let sz = sizeof t in
-  let next = sz + next in
-  dbg "Add local var `%s` (size %d).@." id sz;
-  Smap.add id (-next) env, (-next) :: ids, next
-
-and add_vars env ids next = function
-  | Ttuple ts -> List.fold_left2 add (env, [], next) ts ids
-  | t -> List.fold_left (fun acc id -> add acc t id) (env, [], next) ids
-
-and build_instruction env next = function
-  | Tnop -> env, Cnop, next
-  | Texpr e ->
-     let ce, sz = build_expr env next e in
-     env, Cexpr ce, sz
-
-  | Tdecl (ids, t, None) ->
-     let env, ids, next = add_vars env ids next t in
-     env, Cdefault (ids, t), next
-
-  | Tdecl (ids, t, Some e) ->
-     let ce, next = build_expr env next e in
-     let env, ids, next = add_vars env ids next t in
-     env, Cdecl (ids, ce), next
-
-  | Tasgn (e1, e2) ->
-     let ce1, next = build_expr env next e1 in
-     let ce2, next = build_expr env next e2 in
-     env, Casgn (ce1, ce2), next
-
-  | Tif (e, i1, i2) ->
-     let ce, next = build_expr env next e in
-     let env, ci1, next = build_instruction env next i1 in
-     let env, ci2, next = build_instruction env next i2 in
-     env, Cif(ce, ci1, ci2), next
-
-  | Tfor (e, i) ->
-     let ce, next = build_expr env next e in
-     let _, ci, next = build_instruction env next i in
-     env, Cfor (ce, ci), next
-
-  | Tblock is ->
-     let _, cis, sz =
-       List.fold_left
-         (fun (env, cis, sz) e ->
-           let env, ce, s = build_instruction env sz e in
-           env, ce :: cis, s) (env, [], next) is
-     in
-     env, Cblock (List.rev cis), sz
-
-  | _ -> assert false
-
-and compile_binop = function
+let rec compile_binop = function
   | Add -> addq !%rbx !%rax
   | Sub -> subq !%rbx !%rax
   | Mul -> imulq !%rbx !%rax
   | Div -> cqto ++ idivq !%rbx
-  (* ! parameter in rdx *)
+
   (* TODO : shift when power of 2 *)
   | Mod -> cqto ++ idivq !%rbx ++ movq !%rdx !%rax
   | And -> andq !%rbx !%rax
+
+  (* TODO : use xor instead *)
   | Eq -> cmpq !%rbx !%rax ++ sete !%al
   | Neq -> cmpq !%rbx !%rax ++ setne !%al
   | Or -> orq !%rbx !%rax
@@ -253,33 +33,29 @@ and compile_unop = function
   | Deref -> movq (ind rax) !%rax
   | Ref -> assert false
 
-and push_params code reg es =
-  match reg, es with
-  | _, [] -> code ++ com "all args pushed"
-  | [], e :: tl ->
-     let ce = compile_expr e in
-     let code =
-       code ++ com "push arg onto stack" ++
-         ce ++ pushq !%rax
-     in
-     push_params code reg tl
-  | rd :: rtl, e :: es ->
-     let ce = compile_expr e in
+and push_params code reg n =
+  match reg, n with
+  | _, 0 -> code ++ com "all args pushed"
+  | [], _ -> code ++ com "all args onto stack"
+  | rd :: rtl, n ->
      let code =
        code ++ com "push arg into register" ++
-         ce ++ movq !%rax !%rd
+         popq rax ++ movq !%rax !%rd
      in
-     push_params code rtl es
+     push_params code rtl (n-1)
+
+and nb_label = ref 0
+and nlab () = incr nb_label; ".random_label" ^ (string_of_int !nb_label)
 
 and compile_expr = function
-  | Cnil -> movq (imm 0) !%rax
+  | Cnil -> xorq !%rax !%rax
   | Cint i -> movq (imm64 i) !%rax
   | Cbool true -> movq (imm 1) !%rax
-  | Cbool false -> movq (imm 0) !% rax
+  | Cbool false -> xorq !%rax !% rax
   | Cstring c -> movq (ilab (SSym.lab c)) !%rax
 
   | Cident i -> movq (ind ~ofs:i rbp) !%rax
-  | Cref ce -> compile_left ce
+  | Cunop(Ref, ce) -> compile_left ce
 
   | Ctuple es ->
      List.fold_left
@@ -307,17 +83,50 @@ and compile_expr = function
        compile_unop op
 
   | Cprint (es, fmt) ->
-     let params_to_push =
-       List.filter (fun e ->
-           match e with
-           | Cstring _ | Cbool _ | Cnil | Cint _ -> false
-           | _ -> true) es in
-     let params_to_push = List.rev params_to_push in
-     push_params (com "push args of printf") (List.tl preg) params_to_push ++
+     let f e (n, code) =
+       match e with
+       | Cstring _, _ | Cbool _, _ | Cnil, _ | Cint _, _ -> n, code
+       | ce, Tbool ->
+          let el, l = nlab (), nlab () in
+          let code =
+            code ++ compile_expr ce ++
+              xorq (imm 0) !%rax ++
+              je l ++
+              pushq (ilab (true_string ())) ++
+              jmp el ++
+              label l ++
+              pushq (ilab (false_string ())) ++
+              label el
+          in
+          n + 1, code
+       | ce, Tref _ ->
+          let el, l = nlab (), nlab () in
+          let code =
+            code ++ compile_expr ce ++
+              xorq (imm 0) !%rax ++
+              je l ++
+              pushq !%rax ++
+              jmp el ++
+              label l ++
+              pushq (ilab (nil_string ())) ++
+              label el
+          in
+          n + 1, code
+       | ce, _ -> n + 1, code ++ compile_expr ce ++ pushq !%rax
+     in
+     let n, code = List.fold_right f es (0, nop)  in
+     push_params (com "push args of printf" ++ code) (List.tl preg) n ++
        movq (ilab (FSym.lab fmt)) !%rdi ++
-       movq (imm 0) !%rax ++ call "printf"
+       xorq !%rax !%rax ++ call "printf"
+
+  | Cnew (_, Tstring) ->
+     com "new string" ++
+       movq (imm 8) !%rdi ++
+       call "malloc" ++
+       movq (ilab (empty_string ())) (ind rax)
 
   | Cnew (sz, t) ->
+     com (asprintf "new %a" pp_typ t) ++
      movq (imm sz) !%rdi ++
        call "malloc" ++
        initialize_mem 0 rax t
@@ -337,8 +146,9 @@ and compile_left = function
      compile_left ce ++
        movq (ind rax) !%rax
 
-  | Cref ce ->
-     compile_left ce
+  | Cunop(Ref, ce) ->
+     com "ref" ++
+       compile_expr ce
 
   | _ -> assert false
 
@@ -365,13 +175,13 @@ and jump_loop =
     incr nb_loop;
     let lab = "_" ^ string_of_int !nb_loop in
     com ("start loop" ^ lab) ++
+      jmp (".end_loop" ^ lab) ++
       label (".loop" ^ lab) ++
+      compile_instruction ci ++
+      label (".end_loop" ^ lab) ++
       compile_expr ce ++
       testq (imm 1) !%rax ++
-      je (".end_loop" ^ lab) ++
-      compile_instruction ci ++
-      jmp (".loop" ^ lab) ++
-      label (".end_loop" ^ lab)
+      jne (".loop" ^ lab)
   in
   code
 

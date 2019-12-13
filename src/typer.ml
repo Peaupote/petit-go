@@ -181,7 +181,10 @@ and type_expr info env el =
      resolve_attr_type info env id te e t.t
 
   (* primitives function calls *)
-  | Ecall(Some pkg, f, ps) when pkg.v = "fmt" && f.v = "Print" ->
+  | Ecall(Some pkg, f, _) when pkg.v = "fmt" && f.v <> "Print" ->
+     hint_error f.position (sprintf "unknown function `fmt.%s`" f.v)
+       "did you mean `fmt.Print` ?"
+  | Ecall(Some pkg, _, ps) when pkg.v = "fmt" ->
      (* TODO : dont lookup each time *)
      if not (Vset.mem "fmt" env.packages)
      then unknown_pkg env pkg.position "fmt";
@@ -200,8 +203,8 @@ and type_expr info env el =
            let t = Smap.find s env.types in
            info, typ (Tref t), Tnew t
         | Eident "int" -> info, typ (Tref Tint), Tnew Tint
-        | Eident "string" -> info, typ (Tref Tstring), Tnew Tint
-        | Eident "bool" -> info, typ (Tref Tbool), Tnew Tint
+        | Eident "string" -> info, typ (Tref Tstring), Tnew Tstring
+        | Eident "bool" -> info, typ (Tref Tbool), Tnew Tbool
         | Eident s -> unknown_type env x.position s
         | Eattr ({ v = Eident pkg; _ }, s) when Vset.mem pkg env.packages->
            let pkg = Smap.find pkg !all_packages in
