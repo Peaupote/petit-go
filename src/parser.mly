@@ -88,7 +88,7 @@ func:
   ret = loption(return_ty)
   body = block SEMI
     { { f_name = name;
-        f_params = List.concat params;
+        f_params = List.concat (List.map List.rev params);
         f_return = ret;
         f_body = body } }
 ;

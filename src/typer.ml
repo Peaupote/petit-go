@@ -8,6 +8,14 @@ let cur_pkg = ref ""
 
 (** Error handling *)
 
+let pp_func fmt (params, t_ret) =
+  let rec aux fmt = function
+    | [] -> ()
+    | (p, t) :: [] -> fprintf fmt "%s %a" p pp_typ t
+    | (p, t) :: ps -> fprintf fmt "%s %a, " p pp_typ t; aux fmt ps
+  in
+  fprintf fmt "(%a) %a" aux params pp_typ (Ttuple t_ret)
+
 let type_unexpected pos t expect =
   let msg =
     asprintf
@@ -124,10 +132,17 @@ and resolve_attr_type info env id te e t =
 
 (** Look for the function f in the package pkg
     Mark the package as used if f exists *)
+and clear_name (params, t_ret) =
+  let rec aux = function
+    | [] -> []
+    | (_, ptyp) :: ps -> ptyp :: aux ps
+  in
+  aux params, t_ret
+
 and find_func info env pkg f =
   try
     begin match pkg with
-    | None -> info, Smap.find f.v env.funcs
+    | None -> info, clear_name (Smap.find f.v env.funcs)
     | Some pkg_name ->
        let pkg =
          try Smap.find pkg_name.v !all_packages
@@ -135,7 +150,7 @@ and find_func info env pkg f =
        in
        if not (Vset.mem pkg_name.v env.packages)
        then unknown_pkg env pkg_name.position pkg_name.v;
-       try used_pkg info pkg_name.v, Smap.find f.v pkg.funcs
+       try used_pkg info pkg_name.v, clear_name (Smap.find f.v pkg.funcs)
        with Not_found -> unknown_func pkg f.position f.v
     end
   with Not_found -> unknown_func env f.position f.v
@@ -392,7 +407,7 @@ let rec check_function_params env = function
   | (ty, x) :: xs ->
      match List.find_opt (fun (_, y) -> y.v = x.v) xs with
      | Some (_, y) -> redondant_param_name y.position x.position x.v
-     | None -> (of_ty env ty.v) :: (check_function_params env xs)
+     | None -> (x.v, of_ty env ty.v) :: (check_function_params env xs)
 
 let rec check_function_return env = function
   | [] -> []
@@ -477,8 +492,7 @@ let type_prog env prog =
         with Not_found ->
           let ps = check_function_params env f.v.f_params in
           let ret = check_function_return env f.v.f_return in
-          dbg "Check function %s(%a) %a@." f.v.f_name.v
-            pp_typ (Ttuple ps) pp_typ (Ttuple ret);
+          dbg "Check function %s%a@." f.v.f_name.v pp_func (ps, ret);
           { info with
             func_pos = Smap.add f.v.f_name.v f.position info.func_pos },
           { env with

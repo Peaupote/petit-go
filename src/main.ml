@@ -54,8 +54,10 @@ let () =
   dbg "All files typed.@.";
 
   try
-    try
-      let main = Smap.find "main" !all_packages in
+      let main = try Smap.find "main" !all_packages
+                 with Not_found -> error "missing package main"
+      in
+
       let main_func =
         try Smap.find "main" main.funcs
         with Not_found -> error "missing function main"
@@ -75,6 +77,4 @@ let () =
 
       dbg "@.";
       compile_program compile_order
-
-    with Not_found -> error "missing package main"
   with Error msg -> eprintf "Error: %s.@." msg; exit 1

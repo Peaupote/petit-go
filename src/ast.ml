@@ -96,6 +96,8 @@ let typ_eq t1 t2 =
 let typ_neq t1 t2 = not (typ_eq t1 t2)
 
 (** Type for functions and structures *)
+
+(* first parameters' type, second return types *)
 type tfunc = typ list * typ list
 type tstruct = typ Smap.t
 
@@ -148,7 +150,7 @@ type tinstruction =
 type env = {
     structs : tstruct Smap.t;
     types : typ Smap.t;
-    funcs : tfunc Smap.t;
+    funcs : (((ident * typ) list) * typ list) Smap.t;
     funcs_body : tinstruction Smap.t;
     vars  : typ Smap.t;
     packages : Vset.t }

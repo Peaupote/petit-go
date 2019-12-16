@@ -14,7 +14,8 @@ type cstruct = {
 let structs : (ident, cstruct) Hashtbl.t = Hashtbl.create 10
 
 let rec sizeof = function
-  | Tvoid | Tnil -> assert false
+  | Tnil -> assert false
+  | Tvoid -> 0
   | Tstruct s -> let cstruct = Hashtbl.find structs s in cstruct.size
   | Tint | Tbool | Tstring | Tref _ -> 8
   | Ttuple ts -> List.fold_left (fun sum t -> (sizeof t) + sum) 0 ts
@@ -118,9 +119,9 @@ let make_format ps =
            prev := Tbool; typs, es
         | Tident (_, t) | Tattr (_, _, _, t) | Tunop (_, _, t)
           | Tbinop (_, _, _, t) | Tcall (_, _, _, t) | Tnew t ->
-           Buffer.add_string buf (type_to_format t);
            if t <> Tstring && !prev <> Tstring
            then Buffer.add_char buf ' ';
+           Buffer.add_string buf (type_to_format t);
            prev := t; t :: typs, p :: es
         | Tetuple _ | Tprint _ -> assert false) ([], []) ps
   in
@@ -134,7 +135,7 @@ type cexpr =
 | Cident   of sident
 | Ctuple   of cexpr list
 | Cattr    of cexpr * sident
-| Ccall    of sident * cexpr list
+| Ccall    of ident * cexpr list * typ
 | Cunop    of unop * cexpr
 | Cbinop   of binop * cexpr * cexpr
 | Cprint   of (cexpr * typ) list * sident
@@ -147,7 +148,7 @@ type cinstruction =
 | Cdefault of sident list * typ
 | Cdecl    of sident list * cexpr
 | Cblock   of cinstruction list
-| Creturn  of cexpr
+| Creturn  of cexpr * int * int
 | Cfor     of cexpr * cinstruction
 | Cif      of cexpr * cinstruction * cinstruction
 
@@ -184,20 +185,22 @@ let rec build_expr env = function
      Cprint (ces, fmt)
 
   | Tnew t -> Cnew (sizeof t, t)
+  | Tcall (None, fname, params, t) ->
+     Ccall (fname, List.map (build_expr env) params, t)
 
-  | Tcall _ -> assert false
+  | Tcall (Some _, _, _, _) -> assert false
 
 and add (env, ids, next) t id =
   let sz = sizeof t in
   let next = sz + next in
-  dbg "Add local var `%s` (size %d).@." id sz;
+  dbg "Add local var `%s` at offset %d (size %d).@." id (-next) sz;
   Smap.add id (-next) env, (-next) :: ids, next
 
 and add_vars env ids next = function
   | Ttuple ts -> List.fold_left2 add (env, [], next) ts ids
   | t -> List.fold_left (fun acc id -> add acc t id) (env, [], next) ids
 
-and build_instruction env next = function
+and build_instruction ofsp ofsr env next = function
   | Tnop -> env, Cnop, next
   | Texpr e ->
      let ce = build_expr env e in
@@ -208,7 +211,6 @@ and build_instruction env next = function
      env, Cdefault (ids, t), next
 
   | Tdecl (ids, t, Some e) ->
-     printf "here type %a@." pp_typ t;
      let ce = build_expr env e in
      let env, ids, next = add_vars env ids next t in
      env, Cdecl (ids, ce), next
@@ -220,22 +222,47 @@ and build_instruction env next = function
 
   | Tif (e, i1, i2) ->
      let ce = build_expr env e in
-     let env, ci1, next = build_instruction env next i1 in
-     let env, ci2, next = build_instruction env next i2 in
+     let env, ci1, next = build_instruction ofsp ofsr env next i1 in
+     let env, ci2, next = build_instruction ofsp ofsr env next i2 in
      env, Cif(ce, ci1, ci2), next
 
   | Tfor (e, i) ->
      let ce = build_expr env e in
-     let _, ci, next = build_instruction env next i in
+     let _, ci, next = build_instruction ofsp ofsr env next i in
      env, Cfor (ce, ci), next
 
   | Tblock is ->
      let _, cis, sz =
        List.fold_left
          (fun (env, cis, sz) e ->
-           let env, ce, s = build_instruction env sz e in
+           let env, ce, s = build_instruction ofsp ofsr env sz e in
            env, ce :: cis, s) (env, [], next) is
      in
      env, Cblock (List.rev cis), sz
 
-  | _ -> assert false
+  | Treturn e -> env, Creturn (build_expr env e, ofsp, ofsr), next
+
+let build env =
+  Smap.iter
+    (fun name s ->
+      let cs = compile_struct s in
+      dbg "Compile structure `%s` (size %d).@." name cs.size;
+      Hashtbl.add structs name cs) env.structs;
+  Smap.mapi
+    (fun fname body ->
+      dbg "Compiling `%s`.@." fname;
+      let params, ret = Smap.find fname env.funcs in
+      let ofsp, env =
+        List.fold_right
+          (fun (id, t) (i, env) ->
+            let sz = sizeof t in
+            let ofs = i + sz in
+            dbg "Add new parameter `%s` at offset %d (size %d).@." id i sz;
+            ofs, Smap.add id i env)
+          params (16, Smap.empty) in
+
+      let ofsr = sizeof (Ttuple ret) in
+      let _, cast, fsz = build_instruction ofsp ofsr env 0 body in
+      dbg "done (frame size %d).\n@." fsz;
+      cast, fsz)
+    env.funcs_body

@@ -51,17 +51,15 @@ and compile_expr = function
   | Cnil -> xorq !%rax !%rax
   | Cint i -> movq (imm64 i) !%rax
   | Cbool true -> movq (imm 1) !%rax
-  | Cbool false -> xorq !%rax !% rax
+  | Cbool false -> xorq !%rax !%rax
   | Cstring c -> movq (ilab (SSym.lab c)) !%rax
 
   | Cident i -> movq (ind ~ofs:i rbp) !%rax
   | Cunop(Ref, ce) -> compile_left ce
 
   | Ctuple es ->
-     List.fold_left
-       (fun code e -> code ++ compile_expr e ++ pushq !%rax)
-       nop (List.rev es)
-     ++ popq rax (* TODO : optimize *)
+     List.fold_left (fun code e -> code ++ compile_expr e ++ pushq !%rax)
+       nop (List.rev es) ++ popq rax
 
   | Cattr (ce, id) ->
      com "attr" ++
@@ -83,18 +81,16 @@ and compile_expr = function
        compile_unop op
 
   | Cprint (es, fmt) ->
-     let f e (n, code) =
+     let f (n, code) e =
        match e with
        | Cstring _, _ | Cbool _, _ | Cnil, _ | Cint _, _ -> n, code
        | ce, Tbool ->
           let el, l = nlab (), nlab () in
           let code =
             code ++ compile_expr ce ++
-              xorq (imm 0) !%rax ++
-              je l ++
+              xorq (imm 0) !%rax ++ je l ++
               pushq (ilab (true_string ())) ++
-              jmp el ++
-              label l ++
+              jmp el ++ label l ++
               pushq (ilab (false_string ())) ++
               label el
           in
@@ -103,18 +99,15 @@ and compile_expr = function
           let el, l = nlab (), nlab () in
           let code =
             code ++ compile_expr ce ++
-              xorq (imm 0) !%rax ++
-              je l ++
-              pushq !%rax ++
-              jmp el ++
-              label l ++
+              xorq (imm 0) !%rax ++ je l ++
+              pushq !%rax ++ jmp el ++ label l ++
               pushq (ilab (nil_string ())) ++
               label el
           in
           n + 1, code
        | ce, _ -> n + 1, code ++ compile_expr ce ++ pushq !%rax
      in
-     let n, code = List.fold_right f es (0, nop)  in
+     let n, code = List.fold_left f (0, nop) es  in
      push_params (com "push args of printf" ++ code) (List.tl preg) n ++
        movq (ilab (FSym.lab fmt)) !%rdi ++
        xorq !%rax !%rax ++ call "printf"
@@ -123,7 +116,7 @@ and compile_expr = function
      com "new string" ++
        movq (imm 8) !%rdi ++
        call "malloc" ++
-       movq (ilab (empty_string ())) (ind rax)
+       movq (ilab (empty_string ())) !%rax
 
   | Cnew (sz, t) ->
      com (asprintf "new %a" pp_typ t) ++
@@ -131,7 +124,16 @@ and compile_expr = function
        call "malloc" ++
        initialize_mem 0 rax t
 
-  | Ccall _ -> assert false
+  | Ccall (fname, params, ret) ->
+     let params_sz = 8 * (List.length params) in
+     let ret_sz = sizeof ret - 8 in
+     List.fold_left
+       (fun code p -> code ++ compile_expr p ++ pushq !%rax)
+       (com ("push args of " ^ fname)) params ++
+       call fname ++
+       popn (max 0 (params_sz - ret_sz)) ++
+       com "done call"
+
 
 (* put write address in rax *)
 and compile_left = function
@@ -201,6 +203,13 @@ and compile_instruction = function
   | Cnop -> nop
   | Cexpr e -> compile_expr e
 
+  | Casgn (Ctuple es, e2) ->
+     let code = com "asgn tuple" ++ compile_expr e2 in
+     List.fold_left
+       (fun code e -> code ++ compile_left e ++
+                       popq rbx ++ movq !%rbx (ind rax))
+       code es
+
   | Casgn (e1, e2) ->
      com "asgn" ++
        compile_expr e2 ++
@@ -231,20 +240,23 @@ and compile_instruction = function
      List.fold_left (fun code i -> code ++ compile_instruction i)
        (com "compile new block") es
 
-  | _ -> assert false
+  | Creturn (ce, ofsp, ofsr) ->
+     let rec write_ret pos =
+       if pos = ofsr then nop
+       else com "p" ++ movq (ind ~ofs:(ofsr - pos - 8) rsp) !%r15 ++
+              movq !%r15 (ind ~ofs:pos rcx) ++
+              write_ret (pos+8)
+     in
+     com "return" ++
+       compile_expr ce ++ pushq !%rax ++
+       leaq (ind ~ofs:ofsp rbp) rcx ++     (* point to first arg position *)
+       movq (ind ~ofs:8 rbp) !%rdx ++      (* keep return address *)
+       movq (ind rbp) !%rbp ++             (* keep old rbp *)
+       com "write return values" ++
+       write_ret 0 ++
+       pushq !%rdx ++
+       ret
 
-let build env =
-  Smap.iter
-    (fun name s ->
-      let cs = compile_struct s in
-      dbg "Compile structure `%s` (size %d).@." name cs.size;
-      Hashtbl.add structs name cs) env.structs;
-  Smap.map
-    (fun body ->
-      let _, cast, fsz = build_instruction Smap.empty 0 body in
-      dbg "done (frame size %d).\n@." fsz;
-      cast, fsz)
-    env.funcs_body
 
 let compile env =
   let funcs = build env in
@@ -260,8 +272,10 @@ let compile env =
                label fname ++
                pushq !%rbp ++
                movq !%rsp !%rbp ++
+               pushn fsz ++
                compile_instruction body ++
-               popn fsz ++
+               movq !%rbp !%rsp ++
+               popq rbp ++
                ret)
       funcs (nop, nop)
   in
@@ -275,7 +289,7 @@ let compile_program compile_order =
   let code_main, code_funcs =
     Queue.fold
       (fun (code_main, code_funcs) pkg ->
-        dbg "Start compiling `%s`@." pkg;
+        dbg "Start compiling package `%s`@." pkg;
         let cmain, cfuncs = compile (Smap.find pkg !all_packages) in
         code_main ++ cmain, code_funcs ++ cfuncs)
       (nop, nop) compile_order
