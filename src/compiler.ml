@@ -116,7 +116,7 @@ and compile_expr = function
      com "new string" ++
        movq (imm 8) !%rdi ++
        call "malloc" ++
-       movq (ilab (empty_string ())) !%rax
+       movq (ilab (empty_string ())) (ind rax)
 
   | Cnew (sz, t) ->
      com (asprintf "new %a" pp_typ t) ++
@@ -124,14 +124,21 @@ and compile_expr = function
        call "malloc" ++
        initialize_mem 0 rax t
 
-  | Ccall (fname, params, ret) ->
-     let params_sz = 8 * (List.length params) in
-     let ret_sz = sizeof ret - 8 in
+  | Ccall (fname, params, Tvoid) ->
      List.fold_left
        (fun code p -> code ++ compile_expr p ++ pushq !%rax)
        (com ("push args of " ^ fname)) params ++
        call fname ++
-       popn (max 0 (params_sz - ret_sz)) ++
+       popn (8 * List.length params) ++
+       com "done call"
+
+  | Ccall (fname, params, _ret) ->
+     let delta = 8 * (List.length params) + 24 in
+     List.fold_left
+       (fun code p -> code ++ compile_expr p ++ pushq !%rax)
+       (com ("push args of " ^ fname)) params ++
+       call fname ++
+       popn (max 0 delta) ++
        com "done call"
 
 
@@ -156,30 +163,30 @@ and compile_left = function
 
 and jump_if =
   let nb_if = ref 0 in
-  let code ce ci1 ci2 =
+  let code afs ce ci1 ci2 =
     incr nb_if;
     let lab = "_" ^ string_of_int !nb_if in
     com ("start if" ^ lab) ++
       compile_expr ce ++
       testq (imm 1) !%rax ++
       je (".else" ^ lab) ++
-      compile_instruction ci1 ++
+      compile_instruction afs ci1 ++
       jmp (".endif" ^ lab) ++
       label (".else" ^ lab) ++
-      compile_instruction ci2 ++
+      compile_instruction afs ci2 ++
       label (".endif" ^ lab)
   in
   code
 
 and jump_loop =
   let nb_loop = ref 0 in
-  let code ce ci =
+  let code afs ce ci =
     incr nb_loop;
     let lab = "_" ^ string_of_int !nb_loop in
     com ("start loop" ^ lab) ++
       jmp (".end_loop" ^ lab) ++
       label (".loop" ^ lab) ++
-      compile_instruction ci ++
+      compile_instruction afs ci ++
       label (".end_loop" ^ lab) ++
       compile_expr ce ++
       testq (imm 1) !%rax ++
@@ -199,7 +206,8 @@ and initialize_mem ofs reg = function
   | Tstring -> movq (ilab (empty_string ())) (ind ~ofs:ofs reg)
   | _ -> assert false
 
-and compile_instruction = function
+(* activation frame size *)
+and compile_instruction (afs : int) = function
   | Cnop -> nop
   | Cexpr e -> compile_expr e
 
@@ -232,28 +240,28 @@ and compile_instruction = function
            movq !%rax (ind ~ofs:id rbp))
        code ids
 
-  | Cif (ce, ci1, ci2) -> jump_if ce ci1 ci2
+  | Cif (ce, ci1, ci2) -> jump_if afs ce ci1 ci2
 
-  | Cfor (ce, ci) -> jump_loop ce ci
+  | Cfor (ce, ci) -> jump_loop afs ce ci
 
   | Cblock es ->
-     List.fold_left (fun code i -> code ++ compile_instruction i)
+     List.fold_left (fun code i -> code ++ compile_instruction afs i)
        (com "compile new block") es
 
   | Creturn (ce, ofsp, ofsr) ->
-     let rec write_ret pos =
-       if pos = ofsr then nop
-       else com "p" ++ movq (ind ~ofs:(ofsr - pos - 8) rsp) !%r15 ++
-              movq !%r15 (ind ~ofs:pos rcx) ++
-              write_ret (pos+8)
+     let write_ret pos =
+       if pos = 0 then movq (ind rsp) !%rax
+       else if pos = ofsr then nop
+       else assert false
      in
      com "return" ++
        compile_expr ce ++ pushq !%rax ++
-       leaq (ind ~ofs:ofsp rbp) rcx ++     (* point to first arg position *)
-       movq (ind ~ofs:8 rbp) !%rdx ++      (* keep return address *)
-       movq (ind rbp) !%rbp ++             (* keep old rbp *)
+       leaq (ind ~ofs:ofsp rbp) rcx ++    (* point to first arg position *)
+       movq (ind ~ofs:8 rbp) !%rdx ++     (* keep return address *)
+       movq (ind rbp) !%rbp ++            (* keep old rbp *)
        com "write return values" ++
        write_ret 0 ++
+       popn afs ++
        pushq !%rdx ++
        ret
 
@@ -261,19 +269,19 @@ and compile_instruction = function
 let compile env =
   let funcs = build env in
   let cmain, cfuncs =
-    Smap.fold (fun fname (body, fsz) (cmain, cfuncs) ->
+    Smap.fold (fun fname (body, afs) (cmain, cfuncs) ->
         dbg "Generating assembly code for function `%s`.@." fname;
         if fname = "main"
-        then pushn fsz ++
-               compile_instruction body ++
-               popn fsz, cfuncs
+        then pushn afs ++
+               compile_instruction afs body ++
+               popn afs, cfuncs
         else cmain,
              cfuncs ++
                label fname ++
                pushq !%rbp ++
                movq !%rsp !%rbp ++
-               pushn fsz ++
-               compile_instruction body ++
+               pushn afs ++
+               compile_instruction afs body ++
                movq !%rbp !%rsp ++
                popq rbp ++
                ret)
