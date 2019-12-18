@@ -1,11 +1,8 @@
 package main
 import "fmt"
 
-func foo(x int) (int, int) {
-	return x, x+1
-}
+func side_effect() bool { fmt.Print("oh!\n"); return true }
 
 func main() {
-	x, y := foo(20)
-	fmt.Print(x+y+1, "\n");
+	fmt.Print(true || side_effect(), "\n")
 }

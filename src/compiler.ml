@@ -66,7 +66,15 @@ and compile_expr = function
        compile_left ce ++
        movq (ind ~ofs:id rax) !%rax
 
-  (* TODO : lazy if boolean operators *)
+  | Cbinop(op, e1, e2) when op = And || op = Or ->
+     let lend = nlab () in
+     com "lazy op" ++
+       compile_expr e1 ++
+       xorq (imm 0) !%rax ++
+       (if op = Or then jne else je) lend ++
+       compile_expr e2 ++
+       label lend
+
   | Cbinop (op, e1, e2) ->
      com "binop" ++
        compile_expr e2 ++
