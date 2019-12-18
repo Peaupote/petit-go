@@ -53,13 +53,12 @@ and compile_expr = function
   | Cbool true -> movq (imm 1) !%rax
   | Cbool false -> xorq !%rax !%rax
   | Cstring c -> movq (ilab (SSym.lab c)) !%rax
-
   | Cident i -> movq (ind ~ofs:i rbp) !%rax
   | Cunop(Ref, ce) -> compile_left ce
 
   | Ctuple es ->
-     List.fold_left (fun code e -> code ++ compile_expr e ++ pushq !%rax)
-       nop (List.rev es) ++ popq rax
+     List.fold_right (fun e code -> code ++ compile_expr e ++ pushq !%rax)
+       es nop ++ popq rax
 
   | Cattr (ce, id) ->
      com "attr" ++
@@ -132,7 +131,7 @@ and compile_expr = function
        call "malloc" ++
        initialize_mem 0 rax t
 
-  | Ccall (fname, params, Tvoid) ->
+  | Ccall (fname, params, ret) when sizeof ret <= 8 ->
      List.fold_left
        (fun code p -> code ++ compile_expr p ++ pushq !%rax)
        (com ("push args of " ^ fname)) params ++
@@ -220,7 +219,7 @@ and compile_instruction (afs : int) = function
   | Cexpr e -> compile_expr e
 
   | Casgn (Ctuple es, e2) ->
-     let code = com "asgn tuple" ++ compile_expr e2 in
+     let code = com "asgn tuple" ++ compile_expr e2 ++ pushq !%rax in
      List.fold_left
        (fun code e -> code ++ compile_left e ++
                        popq rbx ++ movq !%rbx (ind rax))
@@ -256,17 +255,30 @@ and compile_instruction (afs : int) = function
      List.fold_left (fun code i -> code ++ compile_instruction afs i)
        (com "compile new block") es
 
+  | Creturn (_, _, 0) -> (* return void *)
+     movq !%rbp !%rsp ++
+       popq rbp ++
+       ret
+
+  | Creturn (c, _, 8) ->
+     compile_expr c ++
+       movq !%rbp !%rsp ++
+       popq rbp ++
+       ret
+
   | Creturn (ce, ofsp, ofsr) ->
-     let write_ret pos =
-       if pos = 0 then movq (ind rsp) !%rax
+     let rec write_ret pos =
+       if pos = 0 then movq (ind rsp) !%rax ++ write_ret (pos + 8)
        else if pos = ofsr then nop
-       else assert false
+       else movq (ind ~ofs:pos rsp) !%r15 ++
+              movq !%r15 (ind ~ofs:(pos - 8) rcx) ++
+              write_ret (pos + 8)
      in
      com "return" ++
        compile_expr ce ++ pushq !%rax ++
-       leaq (ind ~ofs:ofsp rbp) rcx ++    (* point to first arg position *)
-       movq (ind ~ofs:8 rbp) !%rdx ++     (* keep return address *)
-       movq (ind rbp) !%rbp ++            (* keep old rbp *)
+       leaq (ind ~ofs:(ofsp - 8) rbp) rcx ++(* point to first arg position *)
+       movq (ind ~ofs:8 rbp) !%rdx ++       (* keep return address *)
+       movq (ind rbp) !%rbp ++              (* keep old rbp *)
        com "write return values" ++
        write_ret 0 ++
        popn afs ++

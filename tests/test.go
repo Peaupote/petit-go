@@ -1,8 +1,11 @@
 package main
 import "fmt"
 
-func side_effect() bool { fmt.Print("oh!\n"); return true }
+func step(a, b int) (int, int) {
+	return b, a+b
+}
 
 func main() {
-	fmt.Print(true || side_effect(), "\n")
+	x, y := step(step(1,2));
+	fmt.Print(x, y, "\n");
 }
