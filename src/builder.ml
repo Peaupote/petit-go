@@ -11,7 +11,7 @@ type cstruct = {
     fields : sident Smap.t
   }
 
-let structs : (ident, cstruct) Hashtbl.t = Hashtbl.create 10
+let structs : (ident, cstruct) Hashtbl.t = Hashtbl.create 16
 
 let rec sizeof = function
   | Tnil -> assert false
@@ -118,7 +118,7 @@ let make_format ps =
            Buffer.add_string buf (string_of_bool b);
            prev := Tbool; typs, es
         | Tident (_, t) | Tattr (_, _, _, t) | Tunop (_, _, t)
-          | Tbinop (_, _, _, t) | Tcall (_, _, _, t) | Tnew t ->
+          | Tbinop (_, _, _, t) | Tcall (_, _, _, _, t) | Tnew t ->
            if t <> Tstring && !prev <> Tstring
            then Buffer.add_char buf ' ';
            Buffer.add_string buf (type_to_format t);
@@ -135,7 +135,9 @@ type cexpr =
 | Cident   of sident
 | Ctuple   of cexpr list
 | Cattr    of cexpr * sident
-| Ccall    of ident * cexpr list * typ
+
+  (* type des parametres, type de retour *)
+| Ccall    of ident * cexpr list * typ * typ
 | Cunop    of unop * cexpr
 | Cbinop   of binop * cexpr * cexpr
 | Cprint   of (cexpr * typ) list * sident
@@ -146,7 +148,7 @@ type cinstruction =
 | Cexpr    of cexpr
 | Casgn    of cexpr * cexpr
 | Cdefault of sident list * typ
-| Cdecl    of sident list * cexpr
+| Cdecl    of sident list * cexpr * typ
 | Cblock   of cinstruction list
 | Creturn  of cexpr * int * int
 | Cfor     of cexpr * cinstruction
@@ -185,10 +187,10 @@ let rec build_expr env = function
      Cprint (ces, fmt)
 
   | Tnew t -> Cnew (sizeof t, t)
-  | Tcall (None, fname, params, t) ->
-     Ccall (fname, List.map (build_expr env) params, t)
+  | Tcall (None, fname, params, ps, ret) ->
+     Ccall (fname, List.map (build_expr env) params, Ttuple ps, ret)
 
-  | Tcall (Some _, _, _, _) -> assert false
+  | Tcall _ -> assert false
 
 and add (env, ids, next) t id =
   let sz = sizeof t in
@@ -213,7 +215,7 @@ and build_instruction ofsp ofsr env next = function
   | Tdecl (ids, t, Some e) ->
      let ce = build_expr env e in
      let env, ids, next = add_vars env ids next t in
-     env, Cdecl (ids, ce), next
+     env, Cdecl (ids, ce, t), next
 
   | Tasgn (e1, e2) ->
      let ce1 = build_expr env e1 in

@@ -57,8 +57,8 @@ and compile_expr = function
   | Cunop(Ref, ce) -> compile_left ce
 
   | Ctuple es ->
-     List.fold_right (fun e code -> code ++ compile_expr e ++ pushq !%rax)
-       es nop ++ popq rax
+     List.fold_left (fun code e -> code ++ compile_expr e ++ pushq !%rax)
+       nop es
 
   | Cattr (ce, id) ->
      com "attr" ++
@@ -131,7 +131,18 @@ and compile_expr = function
        call "malloc" ++
        initialize_mem 0 rax t
 
-  | Ccall (fname, params, ret) when sizeof ret <= 8 ->
+  (* if g returns in %rax, unefficient to compose this way *)
+  | Ccall (fname, (Ccall (_, _, _, gret) as g) :: [], params, ret)
+       when sizeof gret > 8 ->
+     compile_expr g ++
+       com "compose" ++
+       call fname ++
+       (if sizeof ret <= 8
+        then popn (sizeof params)
+        else leaq (ind ~ofs:(8-sizeof ret) rcx) rsp) ++
+       com "done call"
+
+  | Ccall (fname, params, _, ret) when sizeof ret <= 8 ->
      List.fold_left
        (fun code p -> code ++ compile_expr p ++ pushq !%rax)
        (com ("push args of " ^ fname)) params ++
@@ -139,15 +150,13 @@ and compile_expr = function
        popn (8 * List.length params) ++
        com "done call"
 
-  | Ccall (fname, params, _ret) ->
-     let delta = 8 * (List.length params) + 24 in
+  | Ccall (fname, params, _, ret) ->
      List.fold_left
        (fun code p -> code ++ compile_expr p ++ pushq !%rax)
        (com ("push args of " ^ fname)) params ++
        call fname ++
-       popn (max 0 delta) ++
+       leaq (ind ~ofs:(8-sizeof ret) rcx) rsp ++
        com "done call"
-
 
 (* put write address in rax *)
 and compile_left = function
@@ -170,30 +179,30 @@ and compile_left = function
 
 and jump_if =
   let nb_if = ref 0 in
-  let code afs ce ci1 ci2 =
+  let code is_main afs ce ci1 ci2 =
     incr nb_if;
     let lab = "_" ^ string_of_int !nb_if in
     com ("start if" ^ lab) ++
       compile_expr ce ++
       testq (imm 1) !%rax ++
       je (".else" ^ lab) ++
-      compile_instruction afs ci1 ++
+      compile_instruction is_main afs ci1 ++
       jmp (".endif" ^ lab) ++
       label (".else" ^ lab) ++
-      compile_instruction afs ci2 ++
+      compile_instruction is_main afs ci2 ++
       label (".endif" ^ lab)
   in
   code
 
 and jump_loop =
   let nb_loop = ref 0 in
-  let code afs ce ci =
+  let code is_main afs ce ci =
     incr nb_loop;
     let lab = "_" ^ string_of_int !nb_loop in
     com ("start loop" ^ lab) ++
       jmp (".end_loop" ^ lab) ++
       label (".loop" ^ lab) ++
-      compile_instruction afs ci ++
+      compile_instruction is_main afs ci ++
       label (".end_loop" ^ lab) ++
       compile_expr ce ++
       testq (imm 1) !%rax ++
@@ -214,16 +223,28 @@ and initialize_mem ofs reg = function
   | _ -> assert false
 
 (* activation frame size *)
-and compile_instruction (afs : int) = function
+and compile_instruction is_main afs = function
   | Cnop -> nop
   | Cexpr e -> compile_expr e
 
   | Casgn (Ctuple es, e2) ->
-     let code = com "asgn tuple" ++ compile_expr e2 ++ pushq !%rax in
-     List.fold_left
-       (fun code e -> code ++ compile_left e ++
-                       popq rbx ++ movq !%rbx (ind rax))
-       code es
+     let code = com "asgn tuple" ++ compile_expr e2 in
+     List.fold_right
+       (fun e code -> code ++ compile_left e ++ popq rbx ++
+                       movq !%rbx (ind rax))
+       es code
+
+  | Cdecl (ids, ce, Ttuple _) ->
+     List.fold_right
+       (fun id code -> code ++ popq rax ++ movq !%rax (ind ~ofs:id rbp))
+       ids (com "declare" ++ compile_expr ce)
+
+  | Cdecl(id :: [], ce, _) ->
+     com "declare" ++
+       compile_expr ce ++
+       movq !%rax (ind ~ofs:id rbp)
+
+  | Cdecl _ -> assert false
 
   | Casgn (e1, e2) ->
      com "asgn" ++
@@ -238,44 +259,37 @@ and compile_instruction (afs : int) = function
        (fun code id -> code ++ initialize_mem id rbp t)
        (com "default values") ids
 
-  | Cdecl (ids, ce) ->
-     let more = ref false in (* TODO : something better *)
-     let code = com "declare" ++ compile_expr ce in
-     List.fold_left
-       (fun code id ->
-         (if !more then code ++ popq rax else (more := true; code)) ++
-           movq !%rax (ind ~ofs:id rbp))
-       code ids
-
-  | Cif (ce, ci1, ci2) -> jump_if afs ce ci1 ci2
-
-  | Cfor (ce, ci) -> jump_loop afs ce ci
-
+  | Cif (ce, ci1, ci2) -> jump_if is_main afs ce ci1 ci2
+  | Cfor (ce, ci) -> jump_loop is_main afs ce ci
   | Cblock es ->
-     List.fold_left (fun code i -> code ++ compile_instruction afs i)
+     List.fold_left (fun code i -> code ++ compile_instruction is_main afs i)
        (com "compile new block") es
+
+  | Creturn (_, _, 0) when is_main -> (* exit 0 *)
+     movq !%rbp !%rsp ++
+       xorq !%rax !%rax ++
+       ret
 
   | Creturn (_, _, 0) -> (* return void *)
      movq !%rbp !%rsp ++
        popq rbp ++
        ret
 
-  | Creturn (c, _, 8) ->
+  | Creturn (c, _, 8) -> (* return in %rax *)
      compile_expr c ++
        movq !%rbp !%rsp ++
        popq rbp ++
        ret
 
-  | Creturn (ce, ofsp, ofsr) ->
+  | Creturn (ce, ofsp, ofsr) -> (* return on stack *)
      let rec write_ret pos =
-       if pos = 0 then movq (ind rsp) !%rax ++ write_ret (pos + 8)
-       else if pos = ofsr then nop
-       else movq (ind ~ofs:pos rsp) !%r15 ++
-              movq !%r15 (ind ~ofs:(pos - 8) rcx) ++
+       if pos = ofsr then nop
+       else movq (ind ~ofs:(ofsr-pos-8) rsp) !%r15 ++
+              movq !%r15 (ind ~ofs:(-pos) rcx) ++
               write_ret (pos + 8)
      in
      com "return" ++
-       compile_expr ce ++ pushq !%rax ++
+       compile_expr ce ++
        leaq (ind ~ofs:(ofsp - 8) rbp) rcx ++(* point to first arg position *)
        movq (ind ~ofs:8 rbp) !%rdx ++       (* keep return address *)
        movq (ind rbp) !%rbp ++              (* keep old rbp *)
@@ -293,7 +307,7 @@ let compile env =
         dbg "Generating assembly code for function `%s`.@." fname;
         if fname = "main"
         then pushn afs ++
-               compile_instruction afs body ++
+               compile_instruction true afs body ++
                popn afs, cfuncs
         else cmain,
              cfuncs ++
@@ -301,7 +315,7 @@ let compile env =
                pushq !%rbp ++
                movq !%rsp !%rbp ++
                pushn afs ++
-               compile_instruction afs body ++
+               compile_instruction false afs body ++
                movq !%rbp !%rsp ++
                popq rbp ++
                ret)
@@ -328,7 +342,7 @@ let compile_program compile_order =
         globl "main" ++ label "main" ++
           movq !%rsp !%rbp ++
           code_main ++
-          movq (imm 0) !%rax ++ (* exit *)
+          xorq !%rax !%rax ++ (* exit *)
           ret ++
           code_funcs;
       data =
@@ -340,30 +354,23 @@ let compile_program compile_order =
   if !ofile = ""
   then ofile := (Filename.remove_extension !ifile);
 
-  let asm_file =
-    if not (!keep_asm)
-    then Filename.temp_file "petitgo" ((Filename.basename !ofile) ^ ".s")
-    else sprintf "%s.s" !ofile in
+  let asm_file = sprintf "%s.s" !ofile in
 
-  dbg "Assembly code fully generated.@.";
+  dbg "Assembly code fully generated in %s.@." asm_file;
   let f = open_out asm_file in
   let fmt = formatter_of_out_channel f in
   print_program fmt p;
   fprintf fmt "@?";
   close_out f;
 
+  if not !exec then exit 0;
+
   dbg "Compile assembly code with gcc.@.";
   let cmd = sprintf (gcc_command ()) asm_file !ofile in
   dbg "> %s@." cmd;
 
-  let _ =
-    try Sys.command cmd
-    with Sys_error _ ->
-      eprintf "An unexpected error occured while calling gcc.@.";
-      eprintf "For more information try using -v option.@.";
-      exit 2
-  in
-
-  if !keep_asm
-  then dbg "Option -S is up so keep assembly code in %s@." asm_file
-  else begin dbg "Detele assembly file.@."; Sys.remove asm_file; end
+  try ignore(Sys.command cmd)
+  with Sys_error _ ->
+    eprintf "An unexpected error occured while calling gcc.@.";
+    eprintf "For more information try using -v option.@.";
+    exit 2

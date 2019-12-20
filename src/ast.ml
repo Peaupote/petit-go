@@ -128,7 +128,7 @@ type texpr =
 | Tident   of ident * typ
 | Tetuple  of texpr list
 | Tattr    of texpr * ident * ident * typ (* struct name, field name *)
-| Tcall    of (ident option) * ident * texpr list * typ
+| Tcall    of (ident option) * ident * texpr list * typ list * typ
 | Tunop    of unop * texpr * typ
 | Tbinop   of binop * texpr * texpr * typ
 | Tprint   of texpr list

@@ -3,7 +3,7 @@ open Format
 let parse_only = ref false
 let type_only  = ref false
 let verbose    = ref false
-let keep_asm   = ref false
+let exec       = ref false
 let allow_unused_var = ref false
 let allow_unused_package = ref false
 let quiet_mode = ref false
@@ -16,7 +16,7 @@ let options = [
     "--type-only",  Arg.Set type_only,    " Stop execution after typing";
     "-v",           Arg.Set verbose,      " Verbose mode";
     "-o",           Arg.Set_string ofile, "<file> Name of compiled file";
-    "-S",           Arg.Set keep_asm,     " Write the assembly code in file";
+    "-E",           Arg.Set exec,         " Produce executable code";
     "--allow-unused", Arg.Tuple [Arg.Set allow_unused_package;
                                  Arg.Set allow_unused_var],
                       " Allows unused packages, vars...";
