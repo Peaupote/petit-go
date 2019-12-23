@@ -230,11 +230,11 @@ and build_instruction ofsp ofsr env next = function
 
   | Tfor (e, i) ->
      let ce = build_expr env e in
-     let _, ci, next = build_instruction ofsp ofsr env next i in
+     let env, ci, next = build_instruction ofsp ofsr env next i in
      env, Cfor (ce, ci), next
 
   | Tblock is ->
-     let _, cis, sz =
+     let env, cis, sz =
        List.fold_left
          (fun (env, cis, sz) e ->
            let env, ce, s = build_instruction ofsp ofsr env sz e in
@@ -244,15 +244,84 @@ and build_instruction ofsp ofsr env next = function
 
   | Treturn e -> env, Creturn (build_expr env e, ofsp, ofsr), next
 
+and escaped_mem esc i =
+  let rec aux esc = function
+    | Tunop (Ref, Tident (_, Tref _), _)
+      | Tunop (Ref, Tident (_, Tstring), _)
+      | Tunop (Ref, Tattr (Tident (_, Tstring), _, _, _), _)
+      | Tunop (Ref, Tattr (Tident (_, Tref _), _, _, _), _) -> esc
+    | Tunop (Ref, Tident (id, _), _)
+      | Tunop (Ref, Tattr (Tident (id, _), _, _, _), _) ->
+       Vset.add id esc
+    | Tetuple es | Tcall (_, _, es, _, _) | Tprint es ->
+       List.fold_left aux esc es
+    | Tattr (e, _, _, _) | Tunop(_, e, _) -> aux esc e
+    | Tbinop(_, e1, e2, _) -> aux (aux esc e1) e2
+    | _ -> esc
+  in
+  match i with
+  | Texpr e | Tdecl (_, _, Some e) | Treturn e -> aux esc e
+  | Tnop | Tdecl _ -> esc
+  | Tasgn (e1, e2) -> aux (aux esc e1) e2
+  | Tblock is -> List.fold_left escaped_mem esc is
+  | Tfor (e, i) -> escaped_mem (aux esc e) i
+  | Tif (e, i1, i2) -> escaped_mem (escaped_mem (aux esc e) i1) i2
+
+and escape_expr esc = function
+  | Tident (id, t) as e ->
+    if Vset.mem id esc then Tunop (Deref, e, t) else e
+  | Tetuple es -> Tetuple (List.map (escape_expr esc) es)
+  | Tattr (e, s, i, t) -> Tattr (escape_expr esc e, s, i, t)
+  | Tcall (pkg, fname, ps, params, ret) ->
+     Tcall (pkg, fname, List.map (escape_expr esc) ps, params, ret)
+  | Tunop (Ref, (Tident (id, _) as e), _) when Vset.mem id esc -> e
+  | Tunop (op, e, t) -> Tunop (op, escape_expr esc e, t)
+  | Tbinop (op, e1, e2, t) -> Tbinop (op, escape_expr esc e1,
+                                     escape_expr esc e2, t)
+  | Tprint es -> Tprint (List.map (escape_expr esc) es)
+  | t -> t
+
+and option_map f = function Some e -> Some (f e) | None -> None
+
+and escape_instr esc = function
+  | Tnop -> Tnop
+  | Texpr e -> Texpr (escape_expr esc e)
+  | Tasgn (e1, e2) -> Tasgn (escape_expr esc e1, escape_expr esc e2)
+  | Tblock is -> Tblock (List.map (escape_instr esc) is)
+  | Tdecl (ids, t, v) ->
+     let v = option_map (escape_expr esc) v in
+     Tdecl (ids, t, v)
+  | Treturn e -> Treturn (escape_expr esc e)
+  | Tfor (e, i) -> Tfor (escape_expr esc e, escape_instr esc i)
+  | Tif (e, i1, i2) -> Tif (escape_expr esc e,
+                           escape_instr esc i1,
+                           escape_instr esc i2)
+
+and pp_list fmt = function
+  | [] -> ()
+  | x :: [] -> fprintf fmt "`%s`" x
+  | x :: xs -> fprintf fmt "`%s`, %a" x pp_list xs
+
 let build env =
   Smap.iter
     (fun name s ->
       let cs = compile_struct s in
       dbg "Compile structure `%s` (size %d).@." name cs.size;
       Hashtbl.add structs name cs) env.structs;
+
   Smap.mapi
     (fun fname body ->
       dbg "Compiling `%s`.@." fname;
+
+      let esc = escaped_mem Vset.empty body in
+      let body =
+        if Vset.cardinal esc = 0 then body
+        else begin
+            dbg "Escape variables: %a.@." pp_list (Vset.elements esc);
+            escape_instr esc body
+          end
+      in
+
       let params, ret = Smap.find fname env.funcs in
       let ofsp, env =
         List.fold_right
@@ -264,7 +333,14 @@ let build env =
           params (16, Smap.empty) in
 
       let ofsr = sizeof (Ttuple ret) in
-      let _, cast, fsz = build_instruction ofsp ofsr env 0 body in
+      let env, cast, fsz = build_instruction ofsp ofsr env 0 body in
+
+      let heap_alloc =
+        Smap.fold (fun id ofs alloc ->
+            if Vset.mem id esc then Iset.add ofs alloc else alloc)
+          env Iset.empty
+      in
+
       dbg "done (frame size %d).\n@." fsz;
-      cast, fsz)
+      heap_alloc, cast, fsz)
     env.funcs_body

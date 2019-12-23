@@ -4,6 +4,17 @@ open X86_64
 open Ast
 open Builder
 
+type compile_info = {
+    heap_alloc : Iset.t;
+    is_main : bool;
+    frame_size : int;
+  }
+
+let compile_info alloc is_main afz =
+  { heap_alloc = alloc;
+    is_main = is_main;
+    frame_size = afz }
+
 let com s = if !verbose then comment s else nop
 
 (** Registers for parameters *)
@@ -179,30 +190,30 @@ and compile_left = function
 
 and jump_if =
   let nb_if = ref 0 in
-  let code is_main afs ce ci1 ci2 =
+  let code info ce ci1 ci2 =
     incr nb_if;
     let lab = "_" ^ string_of_int !nb_if in
     com ("start if" ^ lab) ++
       compile_expr ce ++
       testq (imm 1) !%rax ++
       je (".else" ^ lab) ++
-      compile_instruction is_main afs ci1 ++
+      compile_instruction info ci1 ++
       jmp (".endif" ^ lab) ++
       label (".else" ^ lab) ++
-      compile_instruction is_main afs ci2 ++
+      compile_instruction info ci2 ++
       label (".endif" ^ lab)
   in
   code
 
 and jump_loop =
   let nb_loop = ref 0 in
-  let code is_main afs ce ci =
+  let code info ce ci =
     incr nb_loop;
     let lab = "_" ^ string_of_int !nb_loop in
     com ("start loop" ^ lab) ++
       jmp (".end_loop" ^ lab) ++
       label (".loop" ^ lab) ++
-      compile_instruction is_main afs ci ++
+      compile_instruction info ci ++
       label (".end_loop" ^ lab) ++
       compile_expr ce ++
       testq (imm 1) !%rax ++
@@ -222,8 +233,31 @@ and initialize_mem ofs reg = function
   | Tstring -> movq (ilab (empty_string ())) (ind ~ofs:ofs reg)
   | _ -> assert false
 
-(* activation frame size *)
-and compile_instruction is_main afs = function
+and alloc_heap id t =
+  movq !%rax !%r15 ++ movq (imm (sizeof t)) !%rsi ++ call "malloc" ++
+    movq !%r15 (ind rax) ++
+    movq !%rax (ind ~ofs:id rbp)
+
+and alloc_on_heap heap_alloc id t =
+  if not (Iset.mem id heap_alloc)
+  then movq !%rax (ind ~ofs:id rbp)
+  else alloc_heap id t
+
+and alloc_heap_params heap_alloc ps =
+  let _, code =
+    List.fold_right
+      (fun (_, t) (i, code) ->
+        let sz = sizeof t in
+        let ofs = i + sz in
+        let c = if Iset.mem i heap_alloc
+                then alloc_heap i t
+                else nop in
+        ofs, code ++ c)
+      ps (16, nop)
+  in
+  code
+
+and compile_instruction info = function
   | Cnop -> nop
   | Cexpr e -> compile_expr e
 
@@ -234,15 +268,16 @@ and compile_instruction is_main afs = function
                        movq !%rbx (ind rax))
        es code
 
-  | Cdecl (ids, ce, Ttuple _) ->
-     List.fold_right
-       (fun id code -> code ++ popq rax ++ movq !%rax (ind ~ofs:id rbp))
-       ids (com "declare" ++ compile_expr ce)
+  | Cdecl (ids, ce, Ttuple ts) ->
+     List.fold_right2
+       (fun id t code -> code ++ popq rax ++
+                          alloc_on_heap info.heap_alloc id t)
+       ids ts (com "declare" ++ compile_expr ce)
 
-  | Cdecl(id :: [], ce, _) ->
+  | Cdecl(id :: [], ce, t) ->
      com "declare" ++
        compile_expr ce ++
-       movq !%rax (ind ~ofs:id rbp)
+       alloc_on_heap info.heap_alloc id t
 
   | Cdecl _ -> assert false
 
@@ -259,13 +294,13 @@ and compile_instruction is_main afs = function
        (fun code id -> code ++ initialize_mem id rbp t)
        (com "default values") ids
 
-  | Cif (ce, ci1, ci2) -> jump_if is_main afs ce ci1 ci2
-  | Cfor (ce, ci) -> jump_loop is_main afs ce ci
+  | Cif (ce, ci1, ci2) -> jump_if info ce ci1 ci2
+  | Cfor (ce, ci) -> jump_loop info ce ci
   | Cblock es ->
-     List.fold_left (fun code i -> code ++ compile_instruction is_main afs i)
+     List.fold_left (fun code i -> code ++ compile_instruction info i)
        (com "compile new block") es
 
-  | Creturn (_, _, 0) when is_main -> (* exit 0 *)
+  | Creturn (_, _, 0) when info.is_main -> (* exit 0 *)
      movq !%rbp !%rsp ++
        xorq !%rax !%rax ++
        ret
@@ -295,19 +330,20 @@ and compile_instruction is_main afs = function
        movq (ind rbp) !%rbp ++              (* keep old rbp *)
        com "write return values" ++
        write_ret 0 ++
-       popn afs ++
+       popn info.frame_size ++
        pushq !%rdx ++
        ret
-
 
 let compile env =
   let funcs = build env in
   let cmain, cfuncs =
-    Smap.fold (fun fname (body, afs) (cmain, cfuncs) ->
+    Smap.fold (fun fname (heap_alloc, body, afs) (cmain, cfuncs) ->
         dbg "Generating assembly code for function `%s`.@." fname;
+        let ps = fst (Smap.find fname env.funcs) in
+        let info = compile_info heap_alloc (fname = "main") afs in
         if fname = "main"
         then pushn afs ++
-               compile_instruction true afs body ++
+               compile_instruction info body ++
                popn afs, cfuncs
         else cmain,
              cfuncs ++
@@ -315,7 +351,8 @@ let compile env =
                pushq !%rbp ++
                movq !%rsp !%rbp ++
                pushn afs ++
-               compile_instruction false afs body ++
+               alloc_heap_params heap_alloc ps ++
+               compile_instruction info body ++
                movq !%rbp !%rsp ++
                popq rbp ++
                ret)
@@ -347,8 +384,7 @@ let compile_program compile_order =
           code_funcs;
       data =
         SSym.symbols strings ++
-          FSym.symbols formats
-    }
+          FSym.symbols formats }
   in
 
   if !ofile = ""
