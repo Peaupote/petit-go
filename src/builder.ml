@@ -132,7 +132,7 @@ type cexpr =
 | Cint     of int64
 | Cstring  of int
 | Cbool    of bool
-| Cident   of sident
+| Cident   of sident * typ
 | Ctuple   of cexpr list
 | Cattr    of cexpr * sident
 
@@ -162,7 +162,7 @@ let rec build_expr env = function
   | Testring s -> Cstring (SSym.add strings s)
   | Tebool b -> Cbool b
 
-  | Tident (id, _) -> Cident (Smap.find id env)
+  | Tident (id, t) -> Cident (Smap.find id env, t)
   | Tetuple es -> Ctuple (List.map (build_expr env) es)
 
   | Tattr (e, sname, id, _) ->
@@ -224,17 +224,17 @@ and build_instruction ofsp ofsr env next = function
 
   | Tif (e, i1, i2) ->
      let ce = build_expr env e in
-     let env, ci1, next = build_instruction ofsp ofsr env next i1 in
-     let env, ci2, next = build_instruction ofsp ofsr env next i2 in
+     let _, ci1, next = build_instruction ofsp ofsr env next i1 in
+     let _, ci2, next = build_instruction ofsp ofsr env next i2 in
      env, Cif(ce, ci1, ci2), next
 
   | Tfor (e, i) ->
      let ce = build_expr env e in
-     let env, ci, next = build_instruction ofsp ofsr env next i in
+     let _, ci, next = build_instruction ofsp ofsr env next i in
      env, Cfor (ce, ci), next
 
   | Tblock is ->
-     let env, cis, sz =
+     let _, cis, sz =
        List.fold_left
          (fun (env, cis, sz) e ->
            let env, ce, s = build_instruction ofsp ofsr env sz e in
@@ -246,61 +246,62 @@ and build_instruction ofsp ofsr env next = function
 
 and escaped_mem esc i =
   let rec aux esc = function
-    | Tunop (Ref, Tident (_, Tref _), _)
-      | Tunop (Ref, Tident (_, Tstring), _)
-      | Tunop (Ref, Tattr (Tident (_, Tstring), _, _, _), _)
-      | Tunop (Ref, Tattr (Tident (_, Tref _), _, _, _), _) -> esc
-    | Tunop (Ref, Tident (id, _), _)
-      | Tunop (Ref, Tattr (Tident (id, _), _, _, _), _) ->
-       Vset.add id esc
-    | Tetuple es | Tcall (_, _, es, _, _) | Tprint es ->
+    | Cunop (Ref, Cident (_, Tref _))
+      | Cunop (Ref, Cident (_, Tstring))
+      | Cunop (Ref, Cattr (Cident (_, Tstring), _))
+      | Cunop (Ref, Cattr (Cident (_, Tref _), _)) -> esc
+    | Cunop (Ref, Cident (id, _))
+      | Cunop (Ref, Cattr (Cident (id, _), _)) ->
+       Iset.add id esc
+    | Ctuple es | Ccall (_, es, _, _) ->
        List.fold_left aux esc es
-    | Tattr (e, _, _, _) | Tunop(_, e, _) -> aux esc e
-    | Tbinop(_, e1, e2, _) -> aux (aux esc e1) e2
+    | Cprint (es, _) -> List.fold_left aux esc (fst (List.split es))
+    | Cattr (e, _) | Cunop(_, e) -> aux esc e
+    | Cbinop(_, e1, e2) -> aux (aux esc e1) e2
     | _ -> esc
   in
   match i with
-  | Texpr e | Tdecl (_, _, Some e) | Treturn e -> aux esc e
-  | Tnop | Tdecl _ -> esc
-  | Tasgn (e1, e2) -> aux (aux esc e1) e2
-  | Tblock is -> List.fold_left escaped_mem esc is
-  | Tfor (e, i) -> escaped_mem (aux esc e) i
-  | Tif (e, i1, i2) -> escaped_mem (escaped_mem (aux esc e) i1) i2
+  | Cexpr e | Cdecl (_, e, _) | Creturn (e, _, _) -> aux esc e
+  | Cnop | Cdefault _ -> esc
+  | Casgn (e1, e2) -> aux (aux esc e1) e2
+  | Cblock is -> List.fold_left escaped_mem esc is
+  | Cfor (e, i) -> escaped_mem (aux esc e) i
+  | Cif (e, i1, i2) -> escaped_mem (escaped_mem (aux esc e) i1) i2
 
 and escape_expr esc = function
-  | Tident (id, t) as e ->
-    if Vset.mem id esc then Tunop (Deref, e, t) else e
-  | Tetuple es -> Tetuple (List.map (escape_expr esc) es)
-  | Tattr (e, s, i, t) -> Tattr (escape_expr esc e, s, i, t)
-  | Tcall (pkg, fname, ps, params, ret) ->
-     Tcall (pkg, fname, List.map (escape_expr esc) ps, params, ret)
-  | Tunop (Ref, (Tident (id, _) as e), _) when Vset.mem id esc -> e
-  | Tunop (op, e, t) -> Tunop (op, escape_expr esc e, t)
-  | Tbinop (op, e1, e2, t) -> Tbinop (op, escape_expr esc e1,
-                                     escape_expr esc e2, t)
-  | Tprint es -> Tprint (List.map (escape_expr esc) es)
+  | Cident (id, _) as e ->
+    if Iset.mem id esc then Cunop (Deref, e) else e
+  | Ctuple es -> Ctuple (List.map (escape_expr esc) es)
+  | Cattr (e, ofs) -> Cattr (escape_expr esc e, ofs)
+  | Ccall (fname, ps, params, ret) ->
+     Ccall (fname, List.map (escape_expr esc) ps, params, ret)
+  | Cunop (Ref, (Cident (id, _) as e)) when Iset.mem id esc -> e
+  | Cunop (op, e) -> Cunop (op, escape_expr esc e)
+  | Cbinop (op, e1, e2) -> Cbinop (op, escape_expr esc e1,
+                                  escape_expr esc e2)
+  | Cprint (es, fmt) ->
+     Cprint (List.map (fun (e, t) -> escape_expr esc e, t) es, fmt)
   | t -> t
 
 and option_map f = function Some e -> Some (f e) | None -> None
 
 and escape_instr esc = function
-  | Tnop -> Tnop
-  | Texpr e -> Texpr (escape_expr esc e)
-  | Tasgn (e1, e2) -> Tasgn (escape_expr esc e1, escape_expr esc e2)
-  | Tblock is -> Tblock (List.map (escape_instr esc) is)
-  | Tdecl (ids, t, v) ->
-     let v = option_map (escape_expr esc) v in
-     Tdecl (ids, t, v)
-  | Treturn e -> Treturn (escape_expr esc e)
-  | Tfor (e, i) -> Tfor (escape_expr esc e, escape_instr esc i)
-  | Tif (e, i1, i2) -> Tif (escape_expr esc e,
+  | Cnop -> Cnop
+  | Cexpr e -> Cexpr (escape_expr esc e)
+  | Casgn (e1, e2) -> Casgn (escape_expr esc e1, escape_expr esc e2)
+  | Cblock is -> Cblock (List.map (escape_instr esc) is)
+  | Cdecl (ids, v, t) -> Cdecl (ids, escape_expr esc v, t)
+  | Cdefault (ids, t) -> Cdefault (ids, t)
+  | Creturn (e, ofsp, ofsr) -> Creturn (escape_expr esc e, ofsp, ofsr)
+  | Cfor (e, i) -> Cfor (escape_expr esc e, escape_instr esc i)
+  | Cif (e, i1, i2) -> Cif (escape_expr esc e,
                            escape_instr esc i1,
                            escape_instr esc i2)
 
 and pp_list fmt = function
   | [] -> ()
-  | x :: [] -> fprintf fmt "`%s`" x
-  | x :: xs -> fprintf fmt "`%s`, %a" x pp_list xs
+  | x :: [] -> fprintf fmt "`%d`" x
+  | x :: xs -> fprintf fmt "`%d`, %a" x pp_list xs
 
 let build env =
   Smap.iter
@@ -313,15 +314,6 @@ let build env =
     (fun fname body ->
       dbg "Compiling `%s`.@." fname;
 
-      let esc = escaped_mem Vset.empty body in
-      let body =
-        if Vset.cardinal esc = 0 then body
-        else begin
-            dbg "Escape variables: %a.@." pp_list (Vset.elements esc);
-            escape_instr esc body
-          end
-      in
-
       let params, ret = Smap.find fname env.funcs in
       let ofsp, env =
         List.fold_right
@@ -333,14 +325,17 @@ let build env =
           params (16, Smap.empty) in
 
       let ofsr = sizeof (Ttuple ret) in
-      let env, cast, fsz = build_instruction ofsp ofsr env 0 body in
+      let _, cast, fsz = build_instruction ofsp ofsr env 0 body in
 
-      let heap_alloc =
-        Smap.fold (fun id ofs alloc ->
-            if Vset.mem id esc then Iset.add ofs alloc else alloc)
-          env Iset.empty
+      let esc = escaped_mem Iset.empty cast in
+      let cast =
+        if Iset.cardinal esc = 0 then cast
+        else begin
+            dbg "Escape variables: %a.@." pp_list (Iset.elements esc);
+            escape_instr esc cast
+          end
       in
 
       dbg "done (frame size %d).\n@." fsz;
-      heap_alloc, cast, fsz)
+      esc, cast, fsz)
     env.funcs_body

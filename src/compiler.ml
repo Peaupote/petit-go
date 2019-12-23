@@ -64,7 +64,7 @@ and compile_expr = function
   | Cbool true -> movq (imm 1) !%rax
   | Cbool false -> xorq !%rax !%rax
   | Cstring c -> movq (ilab (SSym.lab c)) !%rax
-  | Cident i -> movq (ind ~ofs:i rbp) !%rax
+  | Cident (i, _) -> movq (ind ~ofs:i rbp) !%rax
   | Cunop(Ref, ce) -> compile_left ce
 
   | Ctuple es ->
@@ -171,7 +171,7 @@ and compile_expr = function
 
 (* put write address in rax *)
 and compile_left = function
-  | Cident id ->
+  | Cident (id, _) ->
      leaq (ind ~ofs:id rbp) rax
 
   | Cattr (ce, id) ->
