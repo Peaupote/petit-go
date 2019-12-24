@@ -1,16 +1,21 @@
 package main
 import "fmt"
+import "abr"
 
 func main() {
-	n := 0;
-	{
-		n := 1;
-		if n == 1 {
-			fmt.Print("a");
-		}
+	var dico *abr.BST = nil
+	for i := 1; i < 10; i++ {
+		x := (55 * i) % 34
+		abr.add(&dico, x)
+		abr.print(dico)
+		fmt.Print("\n")
 	}
-	if n == 0 {
-		fmt.Print("b");
+	if abr.mem(dico, 8) && !abr.mem(dico, 0) &&
+		abr.mem(dico, 32) && !abr.mem(dico, 22) {
+	   fmt.Print("ok\n");
 	}
-	fmt.Print("\n");
+	abr.add(&dico, 42);
+	abr.add(&dico, -1);
+	abr.print(dico); fmt.Print("\n")
 }
+

@@ -139,6 +139,10 @@ and clear_name (params, t_ret) =
   in
   aux params, t_ret
 
+and func_name pkg fname =
+  let pre = match pkg with Some pkg_name -> pkg_name.v | None -> !cur_pkg in
+  sprintf "%s_%s" pre fname
+
 and find_func info env pkg f =
   try
     begin match pkg with
@@ -241,9 +245,9 @@ and type_expr info env el =
      let ret_t = ret ret_t in
      begin match t.t, ps_t with
      | t, t' :: [] when typ_eq t t' ->
-        info, typ ret_t, Tcall (rm pkg, f.v, te::[], ps_t, ret_t)
+        info, typ ret_t, Tcall (func_name pkg f.v, te::[], ps_t, ret_t)
      | Ttuple ts, ts' when List.for_all2 typ_eq ts ts' ->
-        info, typ ret_t, Tcall (rm pkg, f.v, te::[], ps_t, ret_t)
+        info, typ ret_t, Tcall (func_name pkg f.v, te::[], ps_t, ret_t)
      | t, t' -> type_unexpected c.position t (ret t')
      end
   | Ecall (pkg, f, ps) ->
@@ -262,7 +266,7 @@ and type_expr info env el =
            (List.length ps_t) (List.length ps)
      in
      let tau = ret ret_t in
-     info, typ tau, Tcall(rm pkg, f.v, tps, ps_t, tau)
+     info, typ tau, Tcall(func_name pkg f.v, tps, ps_t, tau)
 
 (** Add a new variable of type ty to the environnement and
     remember in info that this is a local variable *)

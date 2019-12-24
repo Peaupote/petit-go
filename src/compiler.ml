@@ -58,6 +58,8 @@ and push_params code reg n =
 and nb_label = ref 0
 and nlab () = incr nb_label; ".random_label" ^ (string_of_int !nb_label)
 
+and resolve_name fname = if fname = "main_main" then "main" else fname
+
 and compile_expr = function
   | Cnil -> xorq !%rax !%rax
   | Cint i -> movq (imm64 i) !%rax
@@ -147,7 +149,7 @@ and compile_expr = function
        when sizeof gret > 8 ->
      compile_expr g ++
        com "compose" ++
-       call fname ++
+       call (resolve_name fname) ++
        (if sizeof ret <= 8
         then popn (sizeof params)
         else leaq (ind ~ofs:(8-sizeof ret) rcx) rsp) ++
@@ -157,7 +159,7 @@ and compile_expr = function
      List.fold_left
        (fun code p -> code ++ compile_expr p ++ pushq !%rax)
        (com ("push args of " ^ fname)) params ++
-       call fname ++
+       call (resolve_name fname) ++
        popn (8 * List.length params) ++
        com "done call"
 
@@ -165,7 +167,7 @@ and compile_expr = function
      List.fold_left
        (fun code p -> code ++ compile_expr p ++ pushq !%rax)
        (com ("push args of " ^ fname)) params ++
-       call fname ++
+       call (resolve_name fname) ++
        leaq (ind ~ofs:(8-sizeof ret) rcx) rsp ++
        com "done call"
 
@@ -334,11 +336,11 @@ and compile_instruction info = function
        pushq !%rdx ++
        ret
 
-let compile env =
+let compile pkg env =
   let funcs = build env in
   let cmain, cfuncs =
     Smap.fold (fun fname (heap_alloc, body, afs) (cmain, cfuncs) ->
-        dbg "Generating assembly code for function `%s`.@." fname;
+        dbg "Generating assembly code for function `%s.%s`.@." pkg fname;
         let ps = fst (Smap.find fname env.funcs) in
         let info = compile_info heap_alloc (fname = "main") afs in
         if fname = "main"
@@ -347,7 +349,7 @@ let compile env =
                popn afs, cfuncs
         else cmain,
              cfuncs ++
-               label fname ++
+               label (sprintf "%s_%s" pkg fname) ++
                pushq !%rbp ++
                movq !%rsp !%rbp ++
                pushn afs ++
@@ -369,7 +371,7 @@ let compile_program compile_order =
     Queue.fold
       (fun (code_main, code_funcs) pkg ->
         dbg "Start compiling package `%s`@." pkg;
-        let cmain, cfuncs = compile (Smap.find pkg !all_packages) in
+        let cmain, cfuncs = compile pkg (Smap.find pkg !all_packages) in
         code_main ++ cmain, code_funcs ++ cfuncs)
       (nop, nop) compile_order
   in

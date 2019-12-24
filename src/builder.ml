@@ -118,7 +118,7 @@ let make_format ps =
            Buffer.add_string buf (string_of_bool b);
            prev := Tbool; typs, es
         | Tident (_, t) | Tattr (_, _, _, t) | Tunop (_, _, t)
-          | Tbinop (_, _, _, t) | Tcall (_, _, _, _, t) | Tnew t ->
+          | Tbinop (_, _, _, t) | Tcall (_, _, _, t) | Tnew t ->
            if t <> Tstring && !prev <> Tstring
            then Buffer.add_char buf ' ';
            Buffer.add_string buf (type_to_format t);
@@ -187,10 +187,8 @@ let rec build_expr env = function
      Cprint (ces, fmt)
 
   | Tnew t -> Cnew (sizeof t, t)
-  | Tcall (None, fname, params, ps, ret) ->
+  | Tcall (fname, params, ps, ret) ->
      Ccall (fname, List.map (build_expr env) params, Ttuple ps, ret)
-
-  | Tcall _ -> assert false
 
 and add (env, ids, next) t id =
   let sz = sizeof t in
