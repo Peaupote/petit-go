@@ -1,21 +1,34 @@
 package main
 import "fmt"
-import "abr"
+
+type L struct { x, y, z int; t T }
+type T struct { x, y int }
+
+func ppL(l L) { fmt.Print(l.x, l.y, l.z, " "); pp(l.t) }
+func pp(t T) { fmt.Print(t.x, t.y, "\n") }
+func f(t T) T { t.x = t.x + 2; t.y = t.y + 2; return t }
+
+func g(x int) (int, int) { return x, x + 1 }
 
 func main() {
-	var dico *abr.BST = nil
-	for i := 1; i < 10; i++ {
-		x := (55 * i) % 34
-		abr.add(&dico, x)
-		abr.print(dico)
-		fmt.Print("\n")
-	}
-	if abr.mem(dico, 8) && !abr.mem(dico, 0) &&
-		abr.mem(dico, 32) && !abr.mem(dico, 22) {
-	   fmt.Print("ok\n");
-	}
-	abr.add(&dico, 42);
-	abr.add(&dico, -1);
-	abr.print(dico); fmt.Print("\n")
+	var t1, t2 T
+	t1.x = 1
+	t1.y = 2
+	t2.x = 3
+	t2.y = 4
+	
+	pp(t1) // 1 2
+	pp(t2) // 3 4
+
+	t2 = f(t1)
+	pp(t1) // 1 2
+	pp(t2) // 3 4
+
+	var l L
+	l.x, l.y, l.z, l.t = 1, 2, 3, f(t2)
+
+	pp(t1) // 1 2
+	pp(t2) // 3 4
+	ppL(l) // 1 2 3 5 6
 }
 

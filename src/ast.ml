@@ -136,8 +136,8 @@ type texpr =
 
 type tinstruction =
   Tnop
-| Texpr   of texpr
-| Tasgn   of texpr * texpr
+| Texpr   of texpr * typ
+| Tasgn   of texpr * texpr * typ
 | Tblock  of tinstruction list
 | Tdecl   of ident list * typ * texpr option
 | Treturn of texpr
@@ -153,7 +153,8 @@ type env = {
     funcs : tfunc Smap.t;
     funcs_body : tinstruction Smap.t;
     vars  : typ Smap.t;
-    packages : Vset.t }
+    packages : Vset.t;
+    order : string list }
 
 let empty_env =
   { structs = Smap.empty;
@@ -161,7 +162,8 @@ let empty_env =
     funcs = Smap.empty;
     funcs_body = Smap.empty;
     vars = Smap.empty;
-    packages = Vset.empty }
+    packages = Vset.empty;
+    order = [] }
 
 let add_env v t env = { env with vars = Smap.add v t env.vars }
 

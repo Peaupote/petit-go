@@ -91,13 +91,18 @@ let escaped_string buf s =
       then Buffer.add_string buf "%%"
       else Buffer.add_char buf c) s
 
-let type_to_format = function
+let rec list_to_format = function
+  | [] -> ""
+  | x :: [] -> type_to_format x
+  | x :: xs -> sprintf "%s %s" (type_to_format x) (list_to_format xs)
+
+and type_to_format = function
   | Tvoid -> assert false
   | Tnil -> assert false
   | Tint -> "%d"
   | Tbool -> "%s"
   | Tstring -> "%s"
-  | Ttuple _ -> assert false
+  | Ttuple ts -> list_to_format ts
   | Tstruct id -> id ^ "@{TODO}"
   | Tref _ -> "%s"
 
@@ -134,10 +139,10 @@ type cexpr =
 | Cbool    of bool
 | Cident   of sident * typ
 | Ctuple   of cexpr list
-| Cattr    of cexpr * sident
+| Cattr    of cexpr * sident * typ
 
   (* type des parametres, type de retour *)
-| Ccall    of ident * cexpr list * typ * typ
+| Ccall    of ident * cexpr list * typ list * typ
 | Cunop    of unop * cexpr
 | Cbinop   of binop * cexpr * cexpr
 | Cprint   of (cexpr * typ) list * sident
@@ -145,8 +150,8 @@ type cexpr =
 
 type cinstruction =
   Cnop
-| Cexpr    of cexpr
-| Casgn    of cexpr * cexpr
+| Cexpr    of cexpr * typ
+| Casgn    of cexpr * cexpr * typ
 | Cdefault of sident list * typ
 | Cdecl    of sident list * cexpr * typ
 | Cblock   of cinstruction list
@@ -165,10 +170,10 @@ let rec build_expr env = function
   | Tident (id, t) -> Cident (Smap.find id env, t)
   | Tetuple es -> Ctuple (List.map (build_expr env) es)
 
-  | Tattr (e, sname, id, _) ->
+  | Tattr (e, sname, id, t) ->
      let ce = build_expr env e in
      let cstruct = Hashtbl.find structs sname in
-     Cattr (ce, Smap.find id cstruct.fields)
+     Cattr (ce, Smap.find id cstruct.fields, t)
 
   | Tbinop (op, e1, e2, _) ->
      let ce1 = build_expr env e1 in
@@ -188,7 +193,7 @@ let rec build_expr env = function
 
   | Tnew t -> Cnew (sizeof t, t)
   | Tcall (fname, params, ps, ret) ->
-     Ccall (fname, List.map (build_expr env) params, Ttuple ps, ret)
+     Ccall (fname, List.map (build_expr env) params, ps, ret)
 
 and add (env, ids, next) t id =
   let sz = sizeof t in
@@ -202,9 +207,9 @@ and add_vars env ids next = function
 
 and build_instruction ofsp ofsr env next = function
   | Tnop -> env, Cnop, next
-  | Texpr e ->
+  | Texpr (e, t) ->
      let ce = build_expr env e in
-     env, Cexpr ce, next
+     env, Cexpr (ce, t), next
 
   | Tdecl (ids, t, None) ->
      let env, ids, next = add_vars env ids next t in
@@ -215,10 +220,10 @@ and build_instruction ofsp ofsr env next = function
      let env, ids, next = add_vars env ids next t in
      env, Cdecl (ids, ce, t), next
 
-  | Tasgn (e1, e2) ->
+  | Tasgn (e1, e2, t) ->
      let ce1 = build_expr env e1 in
      let ce2 = build_expr env e2 in
-     env, Casgn (ce1, ce2), next
+     env, Casgn (ce1, ce2, t), next
 
   | Tif (e, i1, i2) ->
      let ce = build_expr env e in
@@ -246,22 +251,22 @@ and escaped_mem esc i =
   let rec aux esc = function
     | Cunop (Ref, Cident (_, Tref _))
       | Cunop (Ref, Cident (_, Tstring))
-      | Cunop (Ref, Cattr (Cident (_, Tstring), _))
-      | Cunop (Ref, Cattr (Cident (_, Tref _), _)) -> esc
+      | Cunop (Ref, Cattr (Cident (_, Tstring), _, _))
+      | Cunop (Ref, Cattr (Cident (_, Tref _), _, _)) -> esc
     | Cunop (Ref, Cident (id, _))
-      | Cunop (Ref, Cattr (Cident (id, _), _)) ->
+      | Cunop (Ref, Cattr (Cident (id, _), _, _)) ->
        Iset.add id esc
     | Ctuple es | Ccall (_, es, _, _) ->
        List.fold_left aux esc es
     | Cprint (es, _) -> List.fold_left aux esc (fst (List.split es))
-    | Cattr (e, _) | Cunop(_, e) -> aux esc e
+    | Cattr (e, _, _) | Cunop(_, e) -> aux esc e
     | Cbinop(_, e1, e2) -> aux (aux esc e1) e2
     | _ -> esc
   in
   match i with
-  | Cexpr e | Cdecl (_, e, _) | Creturn (e, _, _) -> aux esc e
+  | Cexpr (e, _) | Cdecl (_, e, _) | Creturn (e, _, _) -> aux esc e
   | Cnop | Cdefault _ -> esc
-  | Casgn (e1, e2) -> aux (aux esc e1) e2
+  | Casgn (e1, e2, _) -> aux (aux esc e1) e2
   | Cblock is -> List.fold_left escaped_mem esc is
   | Cfor (e, i) -> escaped_mem (aux esc e) i
   | Cif (e, i1, i2) -> escaped_mem (escaped_mem (aux esc e) i1) i2
@@ -270,7 +275,7 @@ and escape_expr esc = function
   | Cident (id, _) as e ->
     if Iset.mem id esc then Cunop (Deref, e) else e
   | Ctuple es -> Ctuple (List.map (escape_expr esc) es)
-  | Cattr (e, ofs) -> Cattr (escape_expr esc e, ofs)
+  | Cattr (e, ofs, t) -> Cattr (escape_expr esc e, ofs, t)
   | Ccall (fname, ps, params, ret) ->
      Ccall (fname, List.map (escape_expr esc) ps, params, ret)
   | Cunop (Ref, (Cident (id, _) as e)) when Iset.mem id esc -> e
@@ -285,8 +290,8 @@ and option_map f = function Some e -> Some (f e) | None -> None
 
 and escape_instr esc = function
   | Cnop -> Cnop
-  | Cexpr e -> Cexpr (escape_expr esc e)
-  | Casgn (e1, e2) -> Casgn (escape_expr esc e1, escape_expr esc e2)
+  | Cexpr (e, t) -> Cexpr (escape_expr esc e, t)
+  | Casgn (e1, e2, t) -> Casgn (escape_expr esc e1, escape_expr esc e2, t)
   | Cblock is -> Cblock (List.map (escape_instr esc) is)
   | Cdecl (ids, v, t) -> Cdecl (ids, escape_expr esc v, t)
   | Cdefault (ids, t) -> Cdefault (ids, t)
@@ -302,11 +307,11 @@ and pp_list fmt = function
   | x :: xs -> fprintf fmt "`%d`, %a" x pp_list xs
 
 let build env =
-  Smap.iter
-    (fun name s ->
-      let cs = compile_struct s in
+  List.iter
+    (fun name ->
+      let cs = compile_struct (Smap.find name env.structs) in
       dbg "Compile structure `%s` (size %d).@." name cs.size;
-      Hashtbl.add structs name cs) env.structs;
+      Hashtbl.add structs name cs) env.order;
 
   Smap.mapi
     (fun fname body ->

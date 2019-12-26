@@ -336,8 +336,8 @@ and check_return_no_underscore te =
 and type_instruction info env = function
   | Inop -> info, env, Tnop
   | Iexpr e ->
-     let info, _, te = type_expr info env e in
-     info, env, Texpr te
+     let info, t, te = type_expr info env e in
+     info, env, Texpr (te, t.t)
   | Idecl (ids, Some ty, None) ->
      let t = of_ty env ty.v in
      let info, ids, env =
@@ -356,7 +356,7 @@ and type_instruction info env = function
         asgn_not_left_value e1.position
      | t1, t2 when typ_neq t1.t t2.t ->
         type_unexpected e2.position t2.t t1.t
-     | _ -> info, env, Tasgn (te1, te2) end
+     | _ -> info, env, Tasgn (te1, te2, t1.t) end
   | Iif (cond, i1, i2) ->
      let info, t, te = type_expr info env cond in
      begin match t.t with
@@ -508,7 +508,7 @@ let type_prog env prog =
 
   (* Check cycles in types *)
   dbg "Construct structure inclusion graph with %d vertices.@."
-    (List.length prog.p_structures);
+    (Smap.cardinal env.structs);
 
   let g = List.map (fun s -> vertex s.v.s_name.v) prog.p_structures in
   List.iter (fun s ->
@@ -522,10 +522,7 @@ let type_prog env prog =
       | _ -> assert false)
     prog.p_structures;
 
-  let _ = match has_cycle g with
-    | Some cycle -> cycle_struct cycle
-    | None -> ()
-  in
+  let order = topological_sort g |> List.rev in
 
   (* Type functions *)
   let info, env =
@@ -542,4 +539,4 @@ let type_prog env prog =
 
   all_info_packages := Smap.add prog.p_name.v info !all_info_packages;
 
-  env
+  { env with order = order }

@@ -7,8 +7,7 @@ open Builder
 type compile_info = {
     heap_alloc : Iset.t;
     is_main : bool;
-    frame_size : int;
-  }
+    frame_size : int; }
 
 let compile_info alloc is_main afz =
   { heap_alloc = alloc;
@@ -31,8 +30,8 @@ let rec compile_binop = function
   | And -> andq !%rbx !%rax
 
   (* TODO : use xor instead *)
-  | Eq -> cmpq !%rbx !%rax ++ sete !%al
-  | Neq -> cmpq !%rbx !%rax ++ setne !%al
+  | Eq -> xorq !%rbx !%rax ++ sete !%al
+  | Neq -> xorq !%rbx !%rax ++ setne !%al
   | Or -> orq !%rbx !%rax
   | Lt -> cmpq !%rbx !%rax ++ setl !%al
   | Leq -> cmpq !%rbx !%rax ++ setle !%al
@@ -60,23 +59,59 @@ and nlab () = incr nb_label; ".random_label" ^ (string_of_int !nb_label)
 
 and resolve_name fname = if fname = "main_main" then "main" else fname
 
-and compile_expr = function
+and reverse_stack _ts =
+  assert false
+
+and push_func_args ps ts =
+  let push code p t =
+    let sz = sizeof t in
+    if sz <= 8 then code ++ compile_expr p ++ pushq !%rax
+    else code ++ compile_expr ~push_value:true p in
+  List.fold_left2 push (com "push args ") ps ts
+
+and push_loop base sz rd =
+  let rec aux code i =
+    if i = 0 then code
+    else aux (code ++ pushq (ind ~ofs:(base + i - 8) rd)) (i-8)
+  in
+  aux nop sz
+
+and pop_loop sz rd =
+  let rec aux code i =
+    if i = sz then code
+    else aux (code ++ popq rcx ++ movq !%rcx (ind ~ofs:i rd)) (i+8)
+  in
+  aux (com (sprintf "pop_loop %d" sz)) 0
+
+(* push value everywhere *)
+and compile_expr ?(push_value=false) = function
+  | Cnil when push_value  -> pushq (imm 0)
+  | Cint i  when push_value -> pushq (imm64 i)
+  | Cbool true  when push_value -> pushq (imm 1)
+  | Cbool false  when push_value -> pushq (imm 0)
+  | Cstring c  when push_value -> pushq (ilab (SSym.lab c))
+
   | Cnil -> xorq !%rax !%rax
   | Cint i -> movq (imm64 i) !%rax
   | Cbool true -> movq (imm 1) !%rax
   | Cbool false -> xorq !%rax !%rax
   | Cstring c -> movq (ilab (SSym.lab c)) !%rax
+
+  | Cident (i, t) when push_value || sizeof t > 8 -> push_loop i (sizeof t) rbp
   | Cident (i, _) -> movq (ind ~ofs:i rbp) !%rax
-  | Cunop(Ref, ce) -> compile_left ce
+
+  | Cunop(Ref, ce) -> compile_left ce ++ if push_value then pushq !%rax else nop
 
   | Ctuple es ->
-     List.fold_left (fun code e -> code ++ compile_expr e ++ pushq !%rax)
+     List.fold_left (fun code e -> code ++ compile_expr ~push_value:true e)
        nop es
 
-  | Cattr (ce, id) ->
-     com "attr" ++
+  | Cattr (ce, id, t) ->
+     com (asprintf "attr %a" pp_typ t) ++
        compile_left ce ++
-       movq (ind ~ofs:id rax) !%rax
+       if sizeof t > 8 then push_loop 0 (sizeof t) rax
+       else movq (ind ~ofs:id rax) !%rax ++
+              if push_value then pushq !%rax else nop
 
   | Cbinop(op, e1, e2) when op = And || op = Or ->
      let lend = nlab () in
@@ -85,7 +120,8 @@ and compile_expr = function
        xorq (imm 0) !%rax ++
        (if op = Or then jne else je) lend ++
        compile_expr e2 ++
-       label lend
+       label lend ++
+       if push_value then pushq !%rax else nop
 
   | Cbinop (op, e1, e2) ->
      com "binop" ++
@@ -93,12 +129,14 @@ and compile_expr = function
        pushq !%rax ++
        compile_expr e1 ++
        popq rbx ++
-       compile_binop op
+       compile_binop op ++
+       if push_value then pushq !%rax else nop
 
   | Cunop (op, e) ->
      com "unop" ++
        compile_expr e ++
-       compile_unop op
+       compile_unop op ++
+       if push_value then pushq !%rax else nop
 
   | Cprint (es, fmt) ->
      let f (n, code) e =
@@ -125,6 +163,8 @@ and compile_expr = function
               label el
           in
           n + 1, code
+       | ce, Ttuple ts -> n + List.length ts,
+                         code ++ compile_expr ce ++ reverse_stack ts
        | ce, _ -> n + 1, code ++ compile_expr ce ++ pushq !%rax
      in
      let n, code = List.fold_left f (0, nop) es  in
@@ -136,13 +176,15 @@ and compile_expr = function
      com "new string" ++
        movq (imm 8) !%rdi ++
        call "malloc" ++
-       movq (ilab (empty_string ())) (ind rax)
+       movq (ilab (empty_string ())) (ind rax) ++
+       if push_value then pushq !%rax else nop
 
   | Cnew (sz, t) ->
      com (asprintf "new %a" pp_typ t) ++
      movq (imm sz) !%rdi ++
        call "malloc" ++
-       initialize_mem 0 rax t
+       initialize_mem 0 rax t ++
+       if push_value then pushq !%rax else nop
 
   (* if g returns in %rax, unefficient to compose this way *)
   | Ccall (fname, (Ccall (_, _, _, gret) as g) :: [], params, ret)
@@ -151,22 +193,20 @@ and compile_expr = function
        com "compose" ++
        call (resolve_name fname) ++
        (if sizeof ret <= 8
-        then popn (sizeof params)
+        then popn (sizeof (Ttuple params)) ++
+               if push_value then pushq !%rax else nop
         else leaq (ind ~ofs:(8-sizeof ret) rcx) rsp) ++
        com "done call"
 
-  | Ccall (fname, params, _, ret) when sizeof ret <= 8 ->
-     List.fold_left
-       (fun code p -> code ++ compile_expr p ++ pushq !%rax)
-       (com ("push args of " ^ fname)) params ++
+  | Ccall (fname, params, pt, ret) when sizeof ret <= 8 ->
+     push_func_args params pt ++
        call (resolve_name fname) ++
-       popn (8 * List.length params) ++
-       com "done call"
+       popn (sizeof (Ttuple pt)) ++
+       com "done call" ++
+       if push_value && sizeof ret = 8 then pushq !%rax else nop
 
-  | Ccall (fname, params, _, ret) ->
-     List.fold_left
-       (fun code p -> code ++ compile_expr p ++ pushq !%rax)
-       (com ("push args of " ^ fname)) params ++
+  | Ccall (fname, params, pt, ret) ->
+     push_func_args params pt ++
        call (resolve_name fname) ++
        leaq (ind ~ofs:(8-sizeof ret) rcx) rsp ++
        com "done call"
@@ -176,7 +216,7 @@ and compile_left = function
   | Cident (id, _) ->
      leaq (ind ~ofs:id rbp) rax
 
-  | Cattr (ce, id) ->
+  | Cattr (ce, id, _) ->
      compile_left ce ++
        leaq (ind ~ofs:id rax) rax
 
@@ -259,37 +299,45 @@ and alloc_heap_params heap_alloc ps =
   in
   code
 
+and write_value sz =
+  if sz > 8 then pop_loop sz rax
+  else popq rbx ++ movq !%rbx (ind rax)
+
 and compile_instruction info = function
   | Cnop -> nop
-  | Cexpr e -> compile_expr e
+  | Cexpr (e, t) ->
+     let sz = sizeof t in
+     if sz > 8 then compile_expr e ++ popn sz
+     else compile_expr e
 
-  | Casgn (Ctuple es, e2) ->
-     let code = com "asgn tuple" ++ compile_expr e2 in
-     List.fold_right
-       (fun e code -> code ++ compile_left e ++ popq rbx ++
-                       movq !%rbx (ind rax))
-       es code
+  | Casgn (Ctuple es, e2, Ttuple ts) ->
+     let code = com (asprintf "asgn %a" pp_typ (Ttuple ts)) ++
+                  compile_expr e2 in
+     List.fold_right2
+       (fun e t code -> code ++ compile_left e ++ write_value (sizeof t))
+       es ts code
 
   | Cdecl (ids, ce, Ttuple ts) ->
+     let code =
+       com (asprintf "declare %a" pp_typ (Ttuple ts)) ++
+         compile_expr ce in
      List.fold_right2
        (fun id t code -> code ++ popq rax ++
                           alloc_on_heap info.heap_alloc id t)
-       ids ts (com "declare" ++ compile_expr ce)
+       ids ts code
 
   | Cdecl(id :: [], ce, t) ->
-     com "declare" ++
+     com (asprintf "declare %a" pp_typ t) ++
        compile_expr ce ++
        alloc_on_heap info.heap_alloc id t
 
   | Cdecl _ -> assert false
 
-  | Casgn (e1, e2) ->
-     com "asgn" ++
-       compile_expr e2 ++
-       pushq !%rax ++
+  | Casgn (e1, e2, t) ->
+     com (asprintf "asgn %a" pp_typ t) ++
+       compile_expr ~push_value:true e2 ++
        compile_left e1 ++
-       popq rbx ++
-       movq !%rbx (ind rax)
+       write_value (sizeof t)
 
   | Cdefault (ids, t) ->
      List.fold_left
@@ -342,8 +390,9 @@ let compile pkg env =
     Smap.fold (fun fname (heap_alloc, body, afs) (cmain, cfuncs) ->
         dbg "Generating assembly code for function `%s.%s`.@." pkg fname;
         let ps = fst (Smap.find fname env.funcs) in
-        let info = compile_info heap_alloc (fname = "main") afs in
-        if fname = "main"
+        let is_main = pkg = "main" && fname = "main" in
+        let info = compile_info heap_alloc is_main afs in
+        if is_main
         then pushn afs ++
                compile_instruction info body ++
                popn afs, cfuncs
