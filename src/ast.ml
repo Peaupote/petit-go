@@ -99,7 +99,7 @@ let typ_neq t1 t2 = not (typ_eq t1 t2)
 
 (* first parameters' type and name, second return types *)
 type tfunc = ((ident * typ) list) * typ list
-type tstruct = typ Smap.t
+type tstruct = (ident * typ) list
 
 (** Pretty printing *)
 let rec pp_product fmt = function

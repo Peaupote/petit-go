@@ -42,6 +42,15 @@ let lookup s vs =
       | None | Some _ -> acc)
     vs None
 
+let lookup_list s vs =
+  List.fold_left (fun acc (x, _) ->
+      let d = editing_distance s x in
+      match acc with
+      | None when d <= 3 -> Some (x, d)
+      | Some (_, d') when d < d' -> Some (x, d)
+      | None | Some _ -> acc)
+    None vs
+
 exception Error of string
 let error msg = raise (Error msg)
 
@@ -94,7 +103,7 @@ let unknown_var env p v =
                     (sprintf "did you mean `%s` ?" u)
 
 let unknown_field env p s f =
-  match lookup f (Smap.find s env.structs) with
+  match lookup_list f (Smap.find s env.structs) with
   | None -> compile_error p (sprintf "struct `%s` has no field `%s`" s f)
   | Some (u, _) -> hint_error p (sprintf "struct `%s` has no field `%s`" s f)
                     (sprintf "did you mean `%s` ?" u)

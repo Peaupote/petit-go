@@ -48,19 +48,25 @@ and push_params code reg n =
   | _, 0 -> code ++ com "all args pushed"
   | [], _ -> code ++ com "all args onto stack"
   | rd :: rtl, n ->
-     let code =
-       code ++ com "push arg into register" ++
-         popq rax ++ movq !%rax !%rd
-     in
-     push_params code rtl (n-1)
+     let code = code ++ popq rax ++ movq !%rax !%rd in
+     push_params code rtl (n-8)
 
 and nb_label = ref 0
-and nlab () = incr nb_label; ".random_label" ^ (string_of_int !nb_label)
+and nlab _ = incr nb_label; ".random_label" ^ (string_of_int !nb_label)
 
 and resolve_name fname = if fname = "main_main" then "main" else fname
 
-and reverse_stack _ts =
-  assert false
+and reverse_stack ts =
+  let t = Ttuple ts in
+  let sz = sizeof t in
+  let rec loop code i =
+    if i >= sz / 2 then code
+    else
+      let a = ind ~ofs:i rsp in
+      let b = ind ~ofs:(sz-i-8) rsp in
+      loop (code ++ com (string_of_int i) ++ movq a !%r15 ++ movq b !%r14 ++ movq !%r14 a ++ movq !%r15 b) (i+8)
+  in
+  loop (asprintf "reverse %a" pp_typ t |> com) 0
 
 and push_func_args ps ts =
   let push code p t =
@@ -109,7 +115,7 @@ and compile_expr ?(push_value=false) = function
   | Cattr (ce, id, t) ->
      com (asprintf "attr %a" pp_typ t) ++
        compile_left ce ++
-       if sizeof t > 8 then push_loop 0 (sizeof t) rax
+       if sizeof t > 8 then push_loop id (sizeof t) rax
        else movq (ind ~ofs:id rax) !%rax ++
               if push_value then pushq !%rax else nop
 
@@ -152,7 +158,7 @@ and compile_expr ?(push_value=false) = function
               pushq (ilab (false_string ())) ++
               label el
           in
-          n + 1, code
+          n + 8, code
        | ce, Tref _ ->
           let el, l = nlab (), nlab () in
           let code =
@@ -162,15 +168,21 @@ and compile_expr ?(push_value=false) = function
               pushq (ilab (nil_string ())) ++
               label el
           in
-          n + 1, code
-       | ce, Ttuple ts -> n + List.length ts,
-                         code ++ compile_expr ce ++ reverse_stack ts
-       | ce, _ -> n + 1, code ++ compile_expr ce ++ pushq !%rax
+          n + 8, code
+       | ce, ((Ttuple ts) as t) ->
+          n + sizeof t,
+          code ++ compile_expr ce ++ reverse_stack ts
+       | ce, t ->
+          n + sizeof t,
+          code ++ com (asprintf "push %a" pp_typ t) ++
+            compile_expr ~push_value:true ce
      in
      let n, code = List.fold_left f (0, nop) es  in
      push_params (com "push args of printf" ++ code) (List.tl preg) n ++
        movq (ilab (FSym.lab fmt)) !%rdi ++
-       xorq !%rax !%rax ++ call "printf"
+       xorq !%rax !%rax ++ call "printf" ++
+       if n > (8 * (List.length preg - 1)) then popn (n - (8 * (List.length preg - 1)))
+       else nop
 
   | Cnew (_, Tstring) ->
      com "new string" ++

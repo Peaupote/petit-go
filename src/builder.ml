@@ -8,8 +8,8 @@ type sident = int
 
 type cstruct = {
     size : int;
-    fields : sident Smap.t
-  }
+    fields : sident Smap.t;
+    types : (string * typ) list }
 
 let structs : (ident, cstruct) Hashtbl.t = Hashtbl.create 16
 
@@ -22,11 +22,12 @@ let rec sizeof = function
 
 let compile_struct s =
   let size, fields =
-    Smap.fold (fun id t (sz, cstruct) ->
+    List.fold_left (fun (sz, cstruct) (id, t) ->
+        dbg "Field `%s` at offset %d.@." id sz;
         sizeof t + sz, Smap.add id sz cstruct)
-      s (0, Smap.empty)
+      (0, Smap.empty) s
   in
-  { size = size; fields = fields }
+  { size = size; fields = fields; types = s }
 
 
 module type Cmp = sig
@@ -91,10 +92,10 @@ let escaped_string buf s =
       then Buffer.add_string buf "%%"
       else Buffer.add_char buf c) s
 
-let rec list_to_format = function
-  | [] -> ""
-  | x :: [] -> type_to_format x
-  | x :: xs -> sprintf "%s %s" (type_to_format x) (list_to_format xs)
+let rec list_to_format fmt = function
+  | [] -> ()
+  | x :: [] -> fprintf fmt "%s" (type_to_format x)
+  | x :: xs -> fprintf fmt "%s %a" (type_to_format x) list_to_format xs
 
 and type_to_format = function
   | Tvoid -> assert false
@@ -102,8 +103,10 @@ and type_to_format = function
   | Tint -> "%d"
   | Tbool -> "%s"
   | Tstring -> "%s"
-  | Ttuple ts -> list_to_format ts
-  | Tstruct id -> id ^ "@{TODO}"
+  | Ttuple ts -> asprintf "%a" list_to_format ts
+  | Tstruct s ->
+     let types = (Hashtbl.find structs s).types in
+     asprintf "{%a}" list_to_format (List.map snd types)
   | Tref _ -> "%s"
 
 let make_format ps =

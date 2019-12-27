@@ -24,7 +24,7 @@ let rec pp lst g x =
     | y :: tl -> lookup (pp lst g y) tl
   in
   x.status <- InProcess;
-  let res = lookup (x.label :: lst) x.adj in
+  let res = x.label :: (lookup lst x.adj) in
   x.status <- Visited;
   res
 

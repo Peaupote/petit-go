@@ -79,7 +79,7 @@ decl:
 structure:
   TYPE name = loc(IDENT) STRUCT BEGIN
   vs = lblock(SEMI, END, vars) SEMI
-    { { s_name = name; s_body = List.concat vs } }
+    { { s_name = name; s_body = List.concat (List.map List.rev vs) } }
 ;
 
 func:

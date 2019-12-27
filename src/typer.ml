@@ -117,7 +117,7 @@ and resolve_attr_type info env id te e t =
     | Tstruct s ->
        begin
          try let fields = Smap.find s env.structs in
-             let tau = Smap.find id.v fields in
+             let tau = List.assoc id.v fields in
              info, tau, s, te
          with Not_found -> unknown_field env id.position s id.v
        end
@@ -419,16 +419,16 @@ let rec check_function_return env = function
 
 (** Check that structure declaration is correct *)
 let type_structure env s =
-  let rec check_fields fs = function
-    | [] -> fs
+  let rec check_fields = function
+    | [] -> []
     | (ty, x) :: xs ->
        match List.find_opt (fun (_, y) -> y.v = x.v) xs with
        | Some (_, y) -> redondant_field_name y.position x.position x.v
-       | None -> check_fields (Smap.add x.v (of_ty env ty.v) fs) xs
+       | None -> (x.v, (of_ty env ty.v)) :: check_fields xs
   in
-  let fields = check_fields Smap.empty s.v.s_body in
+  let fields = check_fields s.v.s_body in
   dbg "Add struct `%s` with %d fields to package `%s`@."
-    s.v.s_name.v (Smap.cardinal fields) !cur_pkg;
+    s.v.s_name.v (List.length fields) !cur_pkg;
   { env with types = Smap.add s.v.s_name.v (Tstruct s.v.s_name.v) env.types;
              structs = Smap.add s.v.s_name.v fields env.structs }
 
@@ -514,15 +514,16 @@ let type_prog env prog =
   List.iter (fun s ->
       match Smap.find s.v.s_name.v env.types with
       | Tstruct s ->
-         Smap.iter
-           (fun _ t ->
+         List.iter
+           (fun (_, t) ->
              match t with
              | Tstruct s' -> add_node g s' s
              | _ -> ()) (Smap.find s env.structs)
       | _ -> assert false)
     prog.p_structures;
 
-  let order = topological_sort g |> List.rev in
+  let order = topological_sort g in
+  List.iteri (fun i s -> dbg "%d: %s@." i s) order;
 
   (* Type functions *)
   let info, env =
