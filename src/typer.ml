@@ -63,7 +63,7 @@ let rec type_binop info env op e1 e2 =
      | _, _ -> type_unexpected e2.position t2 Tint end
   | Lt | Leq | Gt | Geq ->
      begin match t1, t2 with
-     | Tint, Tint -> info, typ Tbool, Tbinop (op, te1, te2, Tbool)
+     | Tint, Tint -> info, typ Tbool, Tbinop (op, te1, te2, Tint)
      | _, Tint -> type_unexpected e1.position t1 Tint
      | _, _ -> type_unexpected e2.position t2 Tint end
   | And | Or ->
@@ -75,7 +75,7 @@ let rec type_binop info env op e1 e2 =
      if te1 = Tenil && te2 = Tenil
      then nil_cmp_error e1.position;
      if typ_neq t1 t2 then type_unexpected e2.position t1 t2
-     else info, typ Tbool, Tbinop (op, te1, te2, Tbool)
+     else info, typ Tbool, Tbinop (op, te1, te2, t1)
 
 and type_unop info env op e =
   let info, t, te = type_expr info env e in

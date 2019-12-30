@@ -147,7 +147,7 @@ type cexpr =
   (* type des parametres, type de retour *)
 | Ccall    of ident * cexpr list * typ list * typ
 | Cunop    of unop * cexpr
-| Cbinop   of binop * cexpr * cexpr
+| Cbinop   of binop * cexpr * cexpr * typ
 | Cprint   of (cexpr * typ) list * sident
 | Cnew     of int * typ
 
@@ -178,10 +178,10 @@ let rec build_expr env = function
      let cstruct = Hashtbl.find structs sname in
      Cattr (ce, Smap.find id cstruct.fields, t)
 
-  | Tbinop (op, e1, e2, _) ->
+  | Tbinop (op, e1, e2, t) ->
      let ce1 = build_expr env e1 in
      let ce2 = build_expr env e2 in
-     Cbinop (op, ce1, ce2)
+     Cbinop (op, ce1, ce2, t)
 
   | Tunop (op, e, _) -> Cunop (op, build_expr env e)
 
@@ -263,7 +263,7 @@ and escaped_mem esc i =
        List.fold_left aux esc es
     | Cprint (es, _) -> List.fold_left aux esc (fst (List.split es))
     | Cattr (e, _, _) | Cunop(_, e) -> aux esc e
-    | Cbinop(_, e1, e2) -> aux (aux esc e1) e2
+    | Cbinop(_, e1, e2, _) -> aux (aux esc e1) e2
     | _ -> esc
   in
   match i with
@@ -283,8 +283,8 @@ and escape_expr esc = function
      Ccall (fname, List.map (escape_expr esc) ps, params, ret)
   | Cunop (Ref, (Cident (id, _) as e)) when Iset.mem id esc -> e
   | Cunop (op, e) -> Cunop (op, escape_expr esc e)
-  | Cbinop (op, e1, e2) -> Cbinop (op, escape_expr esc e1,
-                                  escape_expr esc e2)
+  | Cbinop (op, e1, e2, t) -> Cbinop (op, escape_expr esc e1,
+                                     escape_expr esc e2, t)
   | Cprint (es, fmt) ->
      Cprint (List.map (fun (e, t) -> escape_expr esc e, t) es, fmt)
   | t -> t

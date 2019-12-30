@@ -318,6 +318,5 @@ let print_in_file ~file p =
   print_program fmt p;
   close_out c
 
-
-let popn n = addq (imm n) !%rsp
-let pushn n = subq (imm n) !%rsp
+let popn n = if n = 0 then nop else addq (imm n) !%rsp
+let pushn n = if n = 0 then nop else subq (imm n) !%rsp

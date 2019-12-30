@@ -19,24 +19,45 @@ let com s = if !verbose then comment s else nop
 (** Registers for parameters *)
 let preg = [rdi; rsi; rdx; rcx; r8; r9]
 
-let rec compile_binop = function
+let rec compile_binop t = function
   | Add -> addq !%rbx !%rax
   | Sub -> subq !%rbx !%rax
   | Mul -> imulq !%rbx !%rax
-  | Div -> cqto ++ idivq !%rbx
 
   (* TODO : shift when power of 2 *)
+  | Div -> cqto ++ idivq !%rbx
   | Mod -> cqto ++ idivq !%rbx ++ movq !%rdx !%rax
-  | And -> andq !%rbx !%rax
 
-  (* TODO : use xor instead *)
-  | Eq -> xorq !%rbx !%rax ++ sete !%al
-  | Neq -> xorq !%rbx !%rax ++ setne !%al
+  | And -> andq !%rbx !%rax
   | Or -> orq !%rbx !%rax
+
+  | Eq -> let sz = sizeof t in
+         if sz  = 8 then xorq !%rbx !%rax ++ sete !%al
+         else xor_stack (sete !%al ++ popn (sz * 2)) sz t
+
+  | Neq -> let sz = sizeof t in
+          if sz  = 8 then xorq !%rbx !%rax ++ setne !%al
+          else xor_stack (setne !%al ++ popn (sz * 2)) sz t
+
   | Lt -> cmpq !%rbx !%rax ++ setl !%al
   | Leq -> cmpq !%rbx !%rax ++ setle !%al
   | Gt -> cmpq !%rbx !%rax ++ setg !%al
   | Geq -> cmpq !%rbx !%rax ++ setge !%al
+
+and xor_stack e sz t =
+  let end_cmp = nlab () in
+  let rec loop code i =
+    if i = sz then code ++ label end_cmp ++ e
+    else
+      let code =
+        code ++
+          movq (ind ~ofs:i rsp) !%rax ++
+          xorq (ind ~ofs:(sz + i) rsp) !%rax ++
+          jne end_cmp
+      in
+      loop code (i+8)
+  in
+  loop (asprintf "compare %a" pp_typ t |> com) 0
 
 and compile_unop = function
   | Not -> testq !%rax !%rax ++ sete !%al
@@ -59,14 +80,27 @@ and resolve_name fname = if fname = "main_main" then "main" else fname
 and reverse_stack ts =
   let t = Ttuple ts in
   let sz = sizeof t in
-  let rec loop code i =
+  let rec rev code base sz i =
     if i >= sz / 2 then code
     else
-      let a = ind ~ofs:i rsp in
-      let b = ind ~ofs:(sz-i-8) rsp in
-      loop (code ++ com (string_of_int i) ++ movq a !%r15 ++ movq b !%r14 ++ movq !%r14 a ++ movq !%r15 b) (i+8)
+      let a = ind ~ofs:(base + i) rsp in
+      let b = ind ~ofs:(base + sz-i-8) rsp in
+      let code = code ++ com (asprintf "%d" i) ++
+                   movq a !%r15 ++
+                   movq b !%r14 ++ movq !%r14 a ++
+                   movq !%r15 b in
+      rev code base sz (i+8)
   in
-  loop (asprintf "reverse %a" pp_typ t |> com) 0
+  let code = rev (asprintf "reverse %a" pp_typ t |> com) 0 sz 0 in
+  (* could be done in one time with little efforts *)
+  List.fold_left
+    (fun (ofs, code) t ->
+      let sz = sizeof t in
+      let code =
+        if sz = 8 then code
+        else rev (code ++ com (asprintf "reverse %a" pp_typ t)) ofs sz 0 in
+      ofs + sz, code)
+    (0, code) ts |> snd
 
 and push_func_args ps ts =
   let push code p t =
@@ -119,7 +153,7 @@ and compile_expr ?(push_value=false) = function
        else movq (ind ~ofs:id rax) !%rax ++
               if push_value then pushq !%rax else nop
 
-  | Cbinop(op, e1, e2) when op = And || op = Or ->
+  | Cbinop(op, e1, e2, _) when op = And || op = Or ->
      let lend = nlab () in
      com "lazy op" ++
        compile_expr e1 ++
@@ -129,13 +163,20 @@ and compile_expr ?(push_value=false) = function
        label lend ++
        if push_value then pushq !%rax else nop
 
-  | Cbinop (op, e1, e2) ->
+  | Cbinop (op, e1, e2, t) when sizeof t = 8 ->
      com "binop" ++
        compile_expr e2 ++
        pushq !%rax ++
        compile_expr e1 ++
        popq rbx ++
-       compile_binop op ++
+       compile_binop t op ++
+       if push_value then pushq !%rax else nop
+
+  | Cbinop (op, e1, e2, t) ->
+     com "binop" ++
+       compile_expr e2 ++
+       compile_expr e1 ++
+       compile_binop t op ++
        if push_value then pushq !%rax else nop
 
   | Cunop (op, e) ->
