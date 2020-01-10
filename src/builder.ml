@@ -27,8 +27,7 @@ let compile_struct s =
         sizeof t + sz, Smap.add id sz cstruct)
       (0, Smap.empty) s
   in
-  { size = size; fields = fields; types = s }
-
+  { size = max 8 size; fields = fields; types = s }
 
 module type Cmp = sig
   type t
@@ -84,6 +83,10 @@ let false_string _ =
 let nil_string _ =
   let id = ref (SSym.add strings "<nil>") in
   SSym.lab !id
+
+let pointer_fmt _ =
+  let id = ref (FSym.add formats "%p") in
+  FSym.lab !id
 
 (** Create a format *)
 let escaped_string buf s =

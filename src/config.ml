@@ -7,6 +7,7 @@ let exec       = ref false
 let allow_unused_var = ref false
 let allow_unused_package = ref false
 let quiet_mode = ref false
+let wild_mode = ref false
 
 let ifile = ref ""
 let ofile = ref ""
@@ -17,14 +18,16 @@ let options = [
     "-v",           Arg.Set verbose,      " Verbose mode";
     "-o",           Arg.Set_string ofile, "<file> Name of compiled file";
     "-E",           Arg.Set exec,         " Produce executable code";
+    "--quiet",      Arg.Set quiet_mode,   " Disable warnings";
+    "--wild-mode",  Arg.Set wild_mode,    " Disable runtime securities";
+
     "--allow-unused", Arg.Tuple [Arg.Set allow_unused_package;
                                  Arg.Set allow_unused_var],
-                      " Allows unused packages, vars...";
+                          " Allows unused packages, vars...";
     "--allow-unused-var", Arg.Set allow_unused_var,
                           " Allows unused vars in code";
     "--allow-unused-pkg", Arg.Set allow_unused_package,
-                          " Allow unused packafes";
-    "--quiet", Arg.Set quiet_mode, " Disable warnings"
+                          " Allow unused packafes"
   ]
 
 let usage = "usage: " ^ Sys.argv.(0) ^ " file"

@@ -123,6 +123,62 @@ and pop_loop sz rd =
   in
   aux (com (sprintf "pop_loop %d" sz)) 0
 
+(* filter arguments for printf *)
+and prepare (n, code) e =
+  match e with
+  | Cstring _, _ | Cbool _, _ | Cnil, _ | Cint _, _ -> n, code
+  | ce, Tbool ->
+     let el, l = nlab (), nlab () in
+     let code =
+       code ++ compile_expr ce ++
+         xorq (imm 0) !%rax ++ je l ++
+         pushq (ilab (true_string ())) ++
+         jmp el ++ label l ++
+         pushq (ilab (false_string ())) ++
+         label el
+     in
+     n + 8, code
+  | ce, Tref _ ->
+     let el, l = nlab (), nlab () in
+     let code =
+       code ++ compile_expr ce ++
+         movq !%rax !%r15 ++
+         xorq (imm 0) !%rax ++ je l ++
+         com "create a string and write hex value with sprintf" ++
+         movq (imm (2 + 8 * 2 + 1)) !%rdi ++
+         movq (imm 1) !%rsi ++
+         call "calloc" ++
+         movq !%rax !%r14 ++
+         movq !%r15 !%rdx ++
+         movq !%rax !%rdi ++
+         movq (ilab (pointer_fmt ())) !%rsi ++
+         xorq !%rax !%rax ++
+         call "sprintf" ++
+         pushq !%r14 ++ jmp el ++ label l ++
+         pushq (ilab (nil_string ())) ++
+         label el
+     in
+     n + 8, code
+  | ce, ((Ttuple ts) as t) ->
+     n + sizeof t,
+     code ++ compile_expr ce ++ reverse_stack ts
+  | ce, t ->
+     n + sizeof t,
+     code ++ com (asprintf "push %a" pp_typ t) ++
+       compile_expr ~push_value:true ce
+
+and check_malloc _ =
+  if !wild_mode then nop else
+  let l = nlab () in
+  xorq (imm 0) !%rax ++
+    jne l ++
+    movq (ilab ".crash_string") !%rdi ++
+    xorq !%rax !%rax ++
+    call "printf" ++
+    movq (imm 1) !%rdi ++
+    call "exit" ++
+    label l
+
 (* push value everywhere *)
 and compile_expr ?(push_value=false) = function
   | Cnil when push_value  -> pushq (imm 0)
@@ -186,39 +242,7 @@ and compile_expr ?(push_value=false) = function
        if push_value then pushq !%rax else nop
 
   | Cprint (es, fmt) ->
-     let f (n, code) e =
-       match e with
-       | Cstring _, _ | Cbool _, _ | Cnil, _ | Cint _, _ -> n, code
-       | ce, Tbool ->
-          let el, l = nlab (), nlab () in
-          let code =
-            code ++ compile_expr ce ++
-              xorq (imm 0) !%rax ++ je l ++
-              pushq (ilab (true_string ())) ++
-              jmp el ++ label l ++
-              pushq (ilab (false_string ())) ++
-              label el
-          in
-          n + 8, code
-       | ce, Tref _ ->
-          let el, l = nlab (), nlab () in
-          let code =
-            code ++ compile_expr ce ++
-              xorq (imm 0) !%rax ++ je l ++
-              pushq !%rax ++ jmp el ++ label l ++
-              pushq (ilab (nil_string ())) ++
-              label el
-          in
-          n + 8, code
-       | ce, ((Ttuple ts) as t) ->
-          n + sizeof t,
-          code ++ compile_expr ce ++ reverse_stack ts
-       | ce, t ->
-          n + sizeof t,
-          code ++ com (asprintf "push %a" pp_typ t) ++
-            compile_expr ~push_value:true ce
-     in
-     let n, code = List.fold_left f (0, nop) es  in
+     let n, code = List.fold_left prepare (0, nop) es  in
      push_params (com "push args of printf" ++ code) (List.tl preg) n ++
        movq (ilab (FSym.lab fmt)) !%rdi ++
        xorq !%rax !%rax ++ call "printf" ++
@@ -229,6 +253,7 @@ and compile_expr ?(push_value=false) = function
      com "new string" ++
        movq (imm 8) !%rdi ++
        call "malloc" ++
+       check_malloc () ++
        movq (ilab (empty_string ())) (ind rax) ++
        if push_value then pushq !%rax else nop
 
@@ -236,6 +261,7 @@ and compile_expr ?(push_value=false) = function
      com (asprintf "new %a" pp_typ t) ++
      movq (imm sz) !%rdi ++
        call "malloc" ++
+       check_malloc () ++
        initialize_mem 0 rax t ++
        if push_value then pushq !%rax else nop
 
@@ -329,7 +355,8 @@ and initialize_mem ofs reg = function
   | _ -> assert false
 
 and alloc_heap id t =
-  movq !%rax !%r15 ++ movq (imm (sizeof t)) !%rsi ++ call "malloc" ++
+  movq !%rax !%r15 ++ movq (imm (sizeof t)) !%rdi ++ call "malloc" ++
+    check_malloc () ++
     movq !%r15 (ind rax) ++
     movq !%rax (ind ~ofs:id rbp)
 
@@ -487,6 +514,7 @@ let compile_program compile_order =
           ret ++
           code_funcs;
       data =
+        label ".crash_string" ++ string "Malloc refuse to alloc new memory...\n" ++
         SSym.symbols strings ++
           FSym.symbols formats }
   in
