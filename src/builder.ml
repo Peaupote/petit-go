@@ -157,6 +157,8 @@ type cexpr =
 type cinstruction =
   Cnop
 | Cexpr    of cexpr * typ
+| Cincr    of cexpr
+| Cdecr    of cexpr
 | Casgn    of cexpr * cexpr * typ
 | Cdefault of sident list * typ
 | Cdecl    of sident list * cexpr * typ
@@ -270,7 +272,8 @@ and escaped_mem esc i =
     | _ -> esc
   in
   match i with
-  | Cexpr (e, _) | Cdecl (_, e, _) | Creturn (e, _, _) -> aux esc e
+  | Cexpr (e, _) | Cdecl (_, e, _) | Creturn (e, _, _)
+    | Cincr e | Cdecr e -> aux esc e
   | Cnop | Cdefault _ -> esc
   | Casgn (e1, e2, _) -> aux (aux esc e1) e2
   | Cblock is -> List.fold_left escaped_mem esc is
@@ -284,7 +287,8 @@ and escape_expr esc = function
   | Cattr (e, ofs, t) -> Cattr (escape_expr esc e, ofs, t)
   | Ccall (fname, ps, params, ret) ->
      Ccall (fname, List.map (escape_expr esc) ps, params, ret)
-  | Cunop (Ref, (Cident (id, _) as e)) when Iset.mem id esc -> e
+  | Cunop (Ref, Cident (id, t)) when Iset.mem id esc ->
+     Cident (id, Tref t)
   | Cunop (op, e) -> Cunop (op, escape_expr esc e)
   | Cbinop (op, e1, e2, t) -> Cbinop (op, escape_expr esc e1,
                                      escape_expr esc e2, t)
@@ -297,6 +301,8 @@ and option_map f = function Some e -> Some (f e) | None -> None
 and escape_instr esc = function
   | Cnop -> Cnop
   | Cexpr (e, t) -> Cexpr (escape_expr esc e, t)
+  | Cincr e -> Cincr (escape_expr esc e)
+  | Cdecr e -> Cdecr (escape_expr esc e)
   | Casgn (e1, e2, t) -> Casgn (escape_expr esc e1, escape_expr esc e2, t)
   | Cblock is -> Cblock (List.map (escape_instr esc) is)
   | Cdecl (ids, v, t) -> Cdecl (ids, escape_expr esc v, t)

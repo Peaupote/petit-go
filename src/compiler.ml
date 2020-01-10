@@ -141,15 +141,16 @@ and prepare (n, code) e =
   | ce, Tref _ ->
      let el, l = nlab (), nlab () in
      let code =
-       code ++ compile_expr ce ++
+       code ++
+         compile_expr ce ++
          movq !%rax !%r15 ++
          xorq (imm 0) !%rax ++ je l ++
          com "create a string and write hex value with sprintf" ++
          movq (imm (2 + 8 * 2 + 1)) !%rdi ++
          movq (imm 1) !%rsi ++
          call "calloc" ++
-         movq !%rax !%r14 ++
-         movq !%r15 !%rdx ++
+         movq !%rax !%r14 ++ (* r14 address of pattern *)
+         movq !%r15 !%rdx ++ (* r15 value of pointer *)
          movq !%rax !%rdi ++
          movq (ilab (pointer_fmt ())) !%rsi ++
          xorq !%rax !%rax ++
@@ -354,10 +355,13 @@ and initialize_mem ofs reg = function
   | Tstring -> movq (ilab (empty_string ())) (ind ~ofs:ofs reg)
   | _ -> assert false
 
+(* pb write value of sz > 8 *)
 and alloc_heap id t =
-  movq !%rax !%r15 ++ movq (imm (sizeof t)) !%rdi ++ call "malloc" ++
+  let sz = sizeof t in
+  (if sz <= 8 then movq !%rax !%r15 else nop) ++
+    movq (imm (sizeof t)) !%rdi ++ call "malloc" ++
     check_malloc () ++
-    movq !%r15 (ind rax) ++
+    (if sz <= 8 then movq !%r15 (ind rax) else nop) ++
     movq !%rax (ind ~ofs:id rbp)
 
 and alloc_on_heap heap_alloc id t =
@@ -390,6 +394,9 @@ and compile_instruction info = function
      if sz > 8 then compile_expr e ++ popn sz
      else compile_expr e
 
+  | Cincr ce -> compile_expr ce ++ incq !%rax
+  | Cdecr ce -> compile_expr ce ++ decq !%rax
+
   | Casgn (Ctuple es, e2, Ttuple ts) ->
      let code = com (asprintf "asgn %a" pp_typ (Ttuple ts)) ++
                   compile_expr e2 in
@@ -421,7 +428,10 @@ and compile_instruction info = function
 
   | Cdefault (ids, t) ->
      List.fold_left
-       (fun code id -> code ++ initialize_mem id rbp t)
+       (fun code id ->
+         let is_esc = Iset.mem id info.heap_alloc in
+         code ++ alloc_on_heap info.heap_alloc id t ++
+           initialize_mem id (if is_esc then rax else rbp) t)
        (com "default values") ids
 
   | Cif (ce, ci1, ci2) -> jump_if info ce ci1 ci2
@@ -472,6 +482,7 @@ let compile pkg env =
         let ps = fst (Smap.find fname env.funcs) in
         let is_main = pkg = "main" && fname = "main" in
         let info = compile_info heap_alloc is_main afs in
+        let body = if !optimize then Optimizer.optimize body else body in
         if is_main
         then pushn afs ++
                compile_instruction info body ++
@@ -496,6 +507,8 @@ let gcc_command () =
     (if !verbose then "" else " 1&>2 2>/dev/null")
 
 let compile_program compile_order =
+  dbg "Optimization flag is up. Trying to optimize while compiling.@.";
+
   let code_main, code_funcs =
     Queue.fold
       (fun (code_main, code_funcs) pkg ->

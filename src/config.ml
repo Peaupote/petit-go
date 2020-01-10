@@ -7,7 +7,8 @@ let exec       = ref false
 let allow_unused_var = ref false
 let allow_unused_package = ref false
 let quiet_mode = ref false
-let wild_mode = ref false
+let wild_mode  = ref false
+let optimize   = ref false
 
 let ifile = ref ""
 let ofile = ref ""
@@ -18,6 +19,7 @@ let options = [
     "-v",           Arg.Set verbose,      " Verbose mode";
     "-o",           Arg.Set_string ofile, "<file> Name of compiled file";
     "-E",           Arg.Set exec,         " Produce executable code";
+    "-O",           Arg.Set optimize,     " Enable simple compile-time optimizations";
     "--quiet",      Arg.Set quiet_mode,   " Disable warnings";
     "--wild-mode",  Arg.Set wild_mode,    " Disable runtime securities";
 
