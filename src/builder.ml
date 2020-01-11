@@ -42,7 +42,7 @@ module MakeSym (M : Cmp) = struct
   let lab x = sprintf ".%s_%d" !prefix x
 
   let create p n = prefix := p; create n
-  let stored : (string, int) Hashtbl.t = Hashtbl.create 10
+  let stored : (string, int) Hashtbl.t = Hashtbl.create 16
 
   let c = ref 0
   let add tbl v =
@@ -65,8 +65,8 @@ end
 module SSym = MakeSym(String)
 module FSym = MakeSym(String)
 
-let strings : (int, string) SSym.t = SSym.create "string" 10
-let formats : (int, string) FSym.t = FSym.create "format" 10
+let strings : (int, string) SSym.t = SSym.create "string" 16
+let formats : (int, string) FSym.t = FSym.create "format" 16
 
 let empty_string _ =
   let id = ref (SSym.add strings "") in

@@ -180,7 +180,6 @@ and check_malloc _ =
     call "exit" ++
     label l
 
-(* push value everywhere *)
 and compile_expr ?(push_value=false) = function
   | Cnil when push_value  -> pushq (imm 0)
   | Cint i  when push_value -> pushq (imm64 i)

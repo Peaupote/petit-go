@@ -11,7 +11,7 @@
 
 \title{
   PetitGo \\
-  \large -- projet de compilation, première partie --}
+  \large -- projet de compilation --}
 
 \author{Maxime FLIN}
 
@@ -32,6 +32,9 @@ Les principaux fichiers du projet sont dans le dossier \texttt{src}:
 \item[graph] Implémentation de la recherche de cycle dans un graphe
 \item[lexer et parser] Fichiers \texttt{Ocamllex} et \texttt{Menhir}
 \item[typer] Fonctions de typage
+\item[builder] Construit un arbre de syntaxe abstraite prêt à être compilé
+\item[optimizer] Optimise l'abre de syntaxe abstraite de compilation
+\item[compiler] Compile l'arbre de syntaxe abstraite vers du code assembleur
 \end{description}
 
 On trouve aussi dans le dossier \texttt{tests} les fichiers de test et le script \texttt{tester.sh}.
@@ -54,14 +57,28 @@ Le programme peut aussi prendre des options en fonction des besoins.
 
 \begin{description}
 \item[-v] Mode verbeux.
-\item[-\-parse-only] L'éxécution s'arrête après le parsage.
+\item[--\-parse-only] L'éxécution s'arrête après le parsage.
 \item[-\-type-only] L'éxécution s'arrête après le typage.
+\item[-o <file>] Précise le nom du fichier produit.
+\item[-E] Produit un executable avec le même nom que le fichier assembleur.
+\item[-O] Optimise le code produit
+\item[-\-allow-unused-var] Autorise les variables inutiles.
+\item[-\-allow-unused-pkg] Autorise les imports inutiles.
+\item[-\-allow-unused] Active les deux options précédentes.
+\item[-\-wild-mode] Désactive les sécurités ajoutées à l'exécution.
+\item[-\-quiet] Désactive les avertissements.
 \end{description}
 
-Ainsi, pour compiler le fichier de test \texttt{tests/exec/abr.go} il suffit d'entrer la commande suivante
+Ainsi, pour simplement compiler le fichier de test \texttt{tests/exec/abr.go} vers un fichier assembleur, il suffit d'entrer la commande suivante
 
 \begin{verbatim}
 main.exe tests/exec/abr.go
+\end{verbatim}
+
+Pour avoir un exécutable optimisé qui s'appelle \texttt{a.out}
+
+\begin{verbatim}
+main.exe -E -O -o a.out tests/exec/abr.go
 \end{verbatim}
 
 \section{Implémentation du sujet}
@@ -162,21 +179,21 @@ type texpr =
 | Teint    of int64
 | Testring of string
 | Tebool   of bool
-| Tident   of ident
+| Tident   of ident * typ
 | Tetuple  of texpr list
-| Tattr    of texpr * ident
-| Tcall    of (ident option) * ident * texpr list
-| Tunop    of unop * texpr
-| Tbinop   of binop * texpr * texpr
+| Tattr    of texpr * ident * ident * typ
+| Tcall    of ident * texpr list * typ list * typ
+| Tunop    of unop * texpr * typ
+| Tbinop   of binop * texpr * texpr * typ
 | Tprint   of texpr list
 | Tnew     of typ
 
 type tinstruction =
   Tnop
-| Texpr   of texpr
-| Tasgn   of texpr * texpr
+| Texpr   of texpr * typ
+| Tasgn   of texpr * texpr * typ
 | Tblock  of tinstruction list
-| Tdecl   of ident list * typ option * texpr option
+| Tdecl   of ident list * typ * texpr option
 | Treturn of texpr
 | Tfor    of texpr * tinstruction
 | Tif     of texpr * tinstruction * tinstruction
@@ -191,13 +208,132 @@ type env = {
     structs : tstruct Smap.t;
     types : typ Smap.t;
     funcs : tfunc Smap.t;
+    funcs_body : tinstruction Smap.t;
     vars  : typ Smap.t;
-    packages : Vset.t }
+    packages : Vset.t;
+    (* ordre topologique de dépendance des structures *)
+    order : string list }
 \end{verbatim}
 
-qui retient toutes les informations dont on peut avoir besoin à propos du programme pour pouvoir le compiler plus tard\footnote{du moins toute les informations que j'estime utiles pour l'instant, il est fort probable que viennent s'y ajouter de nouveaux champs plus tard dans le projet.}. Cet environnement est ensuite conservé dans une table globale, permettant de le retrouver rapidement, quand il est importé dans un autre package par exemple.
+qui retient toutes les informations dont on peut avoir besoin à propos du programme pour pouvoir le compiler plus tard. Cet environnement est ensuite conservé dans une table globale, permettant de le retrouver rapidement, quand il est importé dans un autre package par exemple.
 
-\section{Quelques petites extentions du sujet\label{sec:ext}}
+\section{La compilation}
+
+J'ai séparé le travail en deux étapes:
+\begin{enumerate}
+\item La construction d'un arbre de syntaxe abstrait de compilation
+\item La transformation de cet arbre en code assembleur.
+\end{enumerate}
+
+La raison pour laquelles j'ai fait ce choix est simples : séparer l'allocation des variables, le calcul l'espace de pile nécessaire à chaque fonction et autre détails dont nous allons discuter tout de suite, de la production effective de code.
+
+\subsection{La construction de l'arbre de compilation}
+
+\paragraph{Gestion des données statiques}
+
+C'est à ce moment que je calcule la taille en mémoire des variables. Tous les types de bases font 8 octets et les structures ont pour taille la somme de la taille de leurs champs. C'est pour cette raison que dans l'environnement je conserve un ordre topologique sur les structures, afin de m'assurer que lorsque je calcule la taille de l'une d'entre elles, je conaisse bien la taille de toutes celles qu'elle contient.
+
+\textbf{La structure vide a la même taille qu'un entier}. On aurait sûrement put règler le problème de manière plus subtile, en utilisant un seul octet par exemple, mais les journées ne font que vingt quatres heures et j'en perds déjà trop à tenter sans succès de combler le vide de mon existence pour ne pas le faire excessivement de celle de la structure vide. J'ai ajouté relativement à ce cas limite le test \texttt{exec/empty\_struct.go}.
+
+C'est aussi à ce moment que je construis les données qu'il faudrait conserver dans le segment \texttt{.data}. J'y ajoute essentiellement les chaines de caractères tapées en dur dans le code. J'en profite pour construire les formats d'affichage que je passerais à \texttt{printf}.
+
+Pour réduire le nombre d'appels à la fonction \texttt{printf}, je construis un format pour chaque \texttt{print} en fonction du type de ses arguments. J'ai pris la précaution d'échaper les \texttt{\%} qui pourraient se trouver dans une chaine passée en paramètre. De plus, lorsque la donné est connue statiquement, je l'ajoute directement au format.
+
+Pour factoriser un peut de code entre les chaines de caractères et les formats, j'ai implémenté un foncteur \texttt{MakeSym} qui inclu le module \texttt{Hashtbl} de \texttt{Ocaml}. L'addition incrémente un compteur qui référence le nom de la donnée dans le segment data seulement si elle n'y est pas déjà (typiquement la chaine \(\backslash\)\texttt{n}).
+
+\paragraph{L'arbre de compilation}
+
+C'est est essentiellement le même que précedement. J'ai ajouté une instruction \texttt{Cdefault} qui correspond à une declation sans spécification de la valeur.
+
+\begin{verbatim}
+(** Stack ident *)
+type sident = int
+
+type cexpr =
+  Cnil
+| Cint     of int64
+| Cident   of sident * typ
+  (* ... *)
+| Cprint   of (cexpr * typ) list * sident
+| Cnew     of int * typ
+
+type cinstruction =
+  Cnop
+| Cexpr    of cexpr * typ
+| Cincr    of cexpr
+| Cdecr    of cexpr
+| Casgn    of cexpr * cexpr * typ
+| Cdefault of sident list * typ
+| Cdecl    of sident list * cexpr * typ
+| Cblock   of cinstruction list
+| Creturn  of cexpr * int * int
+| Cfor     of cexpr * cinstruction
+| Cif      of cexpr * cinstruction * cinstruction
+
+type sz_cinstruction = cinstruction * int
+\end{verbatim}
+
+Pour chaque variable locale, je lui associe une place sur la pile et je calcule en même temps que je construis l'abre de compilation l'espace nécessaire en mémoire à chaque fonction.
+
+\paragraph{Échappement de variables}
+
+Je gère l'échappement possible de variables après avoir construit l'arbre de compilation. Je me rend compte maintenant que c'est idiot car dans l'éventualité où une structure est déplacée de la pile au tas, alors l'espace qui lui est aloué sur la pile reste le même, alors qu'il n'y a maintenant plus qu'un pointer. Ça représente un certain gâchis d'espace mémoire, mais je me suis aperçu du problème trop tard pour le règler. Il marche parfaitement pour les types de taille 8.
+
+La stratégie adoptée pour choisir quelles variables passer de la pile au tas est assez simple : si à un moment on maniple l'adresse de cette variable, alors on la place sur le tas. On remplace la variable par un pointeur vers la réelle variable et l'arbre en conséquence.
+
+\subsection{Production de code}
+
+À partir de l'arbre de compilation, la transcription en code assembleur est assez directe. Le code est essentiellement constitué des fonctions suivantes
+
+\begin{verbatim}
+type compile_info = {
+    heap_alloc : Iset.t;
+    is_main : bool;
+    frame_size : int; }
+
+val compile_expr : ?push_value:bool -> cexpr -> [ `text ] asm
+
+val compile_instruction : compile_info -> cinstruction -> [ `text ] asm
+
+val compile : ident -> env -> [ `text ] asm * [ `text ] asm
+\end{verbatim}
+
+Le type \texttt{compile\_info} transporte des informations sur la fonction que je suis en train de compile et donc je pourrais avoir besoin.
+
+\paragraph{Convention de retour et d'appel} Par défaut, la fonction \texttt{compile\_expr} place la valeur de l'expression qu'elle calcule dans \texttt{\%rax} si elle de taille 8, sur la pile sinon. On peut forcer l'expression à être écrite sur la pile ; c'est pratique dans certains cas, pour \texttt{printf} par exemple.
+
+Les conventions d'appel sont celles du sujet. Les conventions de retour dépendent de la taille des types en question. Si le type est de taille 8 ou moins (si la fonction ne retourne rien), alors, comme pour \texttt{compile\_expr}, la valeur de retour est placée dans \texttt{rax}. Sinon elle est placée sur la pile à la place anciennement occupée par les arguments. C'est toujours l'appellant qui dépile les arguments, s'il en reste sur la pile toutefois.
+
+Quand plusieurs valeurs sont retournées, alors la dernière est placée en dernière sur la pile. Ainsi, lors d'une composition, il n'y a rien à faire après le retour de la première fonction, les arguments sont déjà en place au sommet de la pile.
+
+J'ai ajouté quelques tests sur l'implémentation des structures, car il n'y en avait aucun dans ceux fournis. En particulier les fichiers \texttt{exec/struct4.go} et \texttt{exec/struct5.go} qui testent respectivement que je copie correctement les structures lorsqu'elles sont passées en paramètres ou retournées, et que les tests d'égalités sur les structures sont corrects.
+
+\paragraph{Affichage avec \texttt{printf}}
+
+Pour l'affichage je fais directement un appel à la fonction \texttt{printf} de la \texttt{libc}. Il y a une petite subtilité. En effet, on ne peut pas utiliser directement les formats de \texttt{printf}, pour les booléens ou pour les pointeurs par exemple. J'ai donc implémenté une fonction
+
+\begin{verbatim}
+val prepare : int * [ `text ] asm ->
+              cexpr * typ ->
+              int * [ `text ] asm
+\end{verbatim}
+
+qui pour une expression donnée avec son son type, l'évalue et la change si c'est nécessaire. Par exemple, le code produit pour les types booléens est le suivant :
+
+\begin{verbatim}
+  code ++ compile_expr ce ++
+  xorq (imm 0) !%rax ++ je l ++
+  pushq (ilab (true_string ())) ++
+  jmp el ++ label l ++
+  pushq (ilab (false_string ())) ++
+  label el
+\end{verbatim}
+
+Ainsi, on affiche bien \texttt{true} ou \texttt{false} et non la valeur entière de l'expression. Il y a un comportement similaire pour les pointeurs.
+
+\paragraph{Les opérateurs booléens sont bien paresseux} J'ai bien fait attention à ce détail. Pour m'assurer de ne pas l'oublier, j'ai ajouter le test \texttt{exec/lazy.go}.
+
+\section{Quelques petite extentions du sujet\label{sec:ext}}
 
 \subsection{Compiler plusieurs packages\label{sec:pkg}}
 
@@ -225,6 +361,8 @@ Pour utiliser une fonction ou une structure du package importé, il faut les fai
     abr.add(&dico, -1)
     abr.print(dico); fmt.Print("\n")
 \end{verbatim}
+
+À la compilation le nom des fonctions est préfixé par le nom du package auquel elles appartiennent (sauf pour la fonction \texttt{main} du package \texttt{main}). Et les packages sont simplements compilés dans le même ordre que celui dans lequel ils ont étés typés.
 
 \subsection{Gestion des erreurs\label{sec:errors}}
 
@@ -267,7 +405,7 @@ Error: a structure with name `T` already exists.
     -----^----------
 \end{verbatim}
 
-Pour ces types d'erreurs, il peut y avoir un problème quand la seconde position est originairement d'un autre fichier. Le problème n'est pas très diffile à résoudre et le sera peut être d'ici janvier, mais compte tenu du peu de pertinence que cela avait pour le projet je ne l'ai pas fait pour l'instant.
+Pour ces types d'erreurs, il peut y avoir un problème quand la seconde position est originairement d'un autre fichier. Le problème n'est pas très difficile à résoudre, mais compte tenu du peu de pertinence que cela avait pour le projet je ne l'ai pas fait.
 
 Quand l'erreur est sur un nom de variable (ou de structure ou de packages ou...) je regarde parmis les noms existants celui qui est le plus proche\footnote{pour la distance minimum d'édition} et je propose un nom de variable qui pourrait convenir.
 
@@ -283,6 +421,32 @@ Hint: did you mean `add` ?
 
 
 \end{verbatim}
+
+\subsection{Miscellanées}
+
+\paragraph{Optimisation du code produit}
+
+Je n'ai rien fait de comparable à l'implémentation d'un compilateur optimisant dans le sens où nous l'avons vu dans le cours (j'ai commencé dans un élan de motivation pendant les fêtes, puis lâchement abandonné).
+
+J'ai néanmoins proposé un petit, ridiculement petit, module d'optimisation du code produit. Nous conviendrons qu'il est plus présent pour montrer qu'on aurait put le faire et montrer vaguement comment que par nécessité ou désir de le faire.
+
+Il optimise vaguement les additions, les soustractions et les opérateurs booléens. C'est à dire que s'il est capable (et encore seulement dans certains cas) de calculer la valeur statique d'un entier ou d'un booléen, alors il le fait. Il se permet aussi de supprimer les boucles dans lequelles on est sûr de ne jamais entrer, ainsi que les conditions inutiles
+
+\paragraph{Production d'un exécutable}
+
+Je me suis permis d'ajouter une option qui produit directement un exécutable. Simplement parce que je trouve que c'est quand même mieux d'avoir un compilateur qui est capable d'en produire un.
+
+\paragraph{Sécurités à l'exécution}
+
+Encore une fois, on parle ici plus d'une \textit{preuve de concept} que d'une vraie extention. J'ai ajouté un petit bout de code qui affiche une erreur dans le cas où un malloc retourne le pointeur nul (voilà, c'est tout). On peut toutefois étendre le concept :
+
+\begin{enumerate}
+\item tester si l'addition d'entier produit un overflow
+\item tester si on déréférence un pointeur nul
+\item tester si on divise par zéro
+\end{enumerate}
+
+C'est quand même plus agréable d'avoir un message d'erreur qu'une vilaine erreur de segmentation. Bien sûr, une fois qu'on est assuré que le programme est correct, alors on peut désactiver ces sécurités en passant en \textit{wild mode}.
 
 \section{Conclusion, suite du projet et améliorations possibles}
 
