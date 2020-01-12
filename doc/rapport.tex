@@ -1,4 +1,6 @@
-\documentclass{article}
+\documentclass[11pt]{article}
+\usepackage{geometry}
+\geometry{left=2cm, top=2cm, right=2cm, bottom=2cm, footskip=.5cm}
 
 \usepackage[french]{babel}
 \usepackage[utf8]{inputenc}
@@ -199,7 +201,7 @@ type tinstruction =
 | Tif     of texpr * tinstruction * tinstruction
 \end{verbatim}
 
-On ne trouve plus de localisation dans ce type car passé le typage, le compilateur n'est plus censé pouvoir encore échouer. Les localisations n'étant utiles que pour préciser les messages d'erreurs qu'il renvoie, passé le typage on peut se permettre de les oublier.
+On ne trouve plus de localisations dans ici car, passé le typage, le compilateur n'est plus censé échouer. Les localisations n'étant utiles que pour préciser la position d'une erreur dans un fichier, passé le typage on peut se permettre de les oublier.
 
 Le typage d'un package renvoie un environnement du type
 
@@ -225,13 +227,13 @@ J'ai séparé le travail en deux étapes:
 \item La transformation de cet arbre en code assembleur.
 \end{enumerate}
 
-La raison pour laquelles j'ai fait ce choix est simples : séparer l'allocation des variables, le calcul l'espace de pile nécessaire à chaque fonction et autre détails dont nous allons discuter tout de suite, de la production effective de code.
+La raison pour laquelles j'ai fait ce choix est simples : séparer l'allocation des variables, le calcul l'espace de pile nécessaire à chaque fonction et autre détails dont nous allons discuter tout de suite, de la production effective de code assembleur.
 
 \subsection{La construction de l'arbre de compilation}
 
 \paragraph{Gestion des données statiques}
 
-C'est à ce moment que je calcule la taille en mémoire des variables. Tous les types de bases font 8 octets et les structures ont pour taille la somme de la taille de leurs champs. C'est pour cette raison que dans l'environnement je conserve un ordre topologique sur les structures, afin de m'assurer que lorsque je calcule la taille de l'une d'entre elles, je conaisse bien la taille de toutes celles qu'elle contient.
+C'est à ce moment que je calcule la taille en mémoire des variables. Tous les types de bases font 8 octets et les structures ont pour taille la somme de la taille de leurs champs. C'est pour cette raison que dans l'environnement je conserve un ordre topologique sur les structures, afin de m'assurer que lorsque je calcule la taille de l'une d'entre elles, je connaisse bien la taille de toutes celles qu'elle contient.
 
 \textbf{La structure vide a la même taille qu'un entier}. On aurait sûrement put règler le problème de manière plus subtile, en utilisant un seul octet par exemple, mais les journées ne font que vingt quatres heures et j'en perds déjà trop à tenter sans succès de combler le vide de mon existence pour ne pas le faire excessivement de celle de la structure vide. J'ai ajouté relativement à ce cas limite le test \texttt{exec/empty\_struct.go}.
 
@@ -243,7 +245,7 @@ Pour factoriser un peut de code entre les chaines de caractères et les formats,
 
 \paragraph{L'arbre de compilation}
 
-C'est est essentiellement le même que précedement. J'ai ajouté une instruction \texttt{Cdefault} qui correspond à une declation sans spécification de la valeur.
+C'est est essentiellement le même que précedement. J'ai ajouté une instruction \texttt{Cdefault} qui correspond à une déclation sans spécification de la valeur.
 
 \begin{verbatim}
 (** Stack ident *)
@@ -277,9 +279,9 @@ Pour chaque variable locale, je lui associe une place sur la pile et je calcule 
 
 \paragraph{Échappement de variables}
 
-Je gère l'échappement possible de variables après avoir construit l'arbre de compilation. Je me rend compte maintenant que c'est idiot car dans l'éventualité où une structure est déplacée de la pile au tas, alors l'espace qui lui est aloué sur la pile reste le même, alors qu'il n'y a maintenant plus qu'un pointer. Ça représente un certain gâchis d'espace mémoire, mais je me suis aperçu du problème trop tard pour le règler. Il marche parfaitement pour les types de taille 8.
+Je gère l'échappement possible de variables après avoir construit l'arbre de compilation. Je me rend compte maintenant que c'est idiot car dans l'éventualité où une structure est déplacée de la pile au tas, alors l'espace qui lui est aloué sur la pile reste le même, alors qu'il n'y a maintenant plus qu'une référence vers celle-ci. Ça représente un certain gâchis d'espace mémoire, mais je me suis aperçu du problème trop tard pour le règler. Il marche parfaitement pour les types de 8 octets (sur une machine 64 bits).
 
-La stratégie adoptée pour choisir quelles variables passer de la pile au tas est assez simple : si à un moment on maniple l'adresse de cette variable, alors on la place sur le tas. On remplace la variable par un pointeur vers la réelle variable et l'arbre en conséquence.
+La stratégie adoptée pour choisir quelles variables passer de la pile au tas est assez simple : si à un moment on manipule l'adresse de cette variable, alors on la place sur le tas. On remplace la variable par un pointeur vers la réelle variable et on modifie l'arbre de syntaxe abstraire en conséquence.
 
 \subsection{Production de code}
 
@@ -298,11 +300,11 @@ val compile_instruction : compile_info -> cinstruction -> [ `text ] asm
 val compile : ident -> env -> [ `text ] asm * [ `text ] asm
 \end{verbatim}
 
-Le type \texttt{compile\_info} transporte des informations sur la fonction que je suis en train de compile et donc je pourrais avoir besoin.
+Le type \texttt{compile\_info} transporte des informations sur la fonction en cours de compilation et dont je pourrais avoir besoin.
 
 \paragraph{Convention de retour et d'appel} Par défaut, la fonction \texttt{compile\_expr} place la valeur de l'expression qu'elle calcule dans \texttt{\%rax} si elle de taille 8, sur la pile sinon. On peut forcer l'expression à être écrite sur la pile ; c'est pratique dans certains cas, pour \texttt{printf} par exemple.
 
-Les conventions d'appel sont celles du sujet. Les conventions de retour dépendent de la taille des types en question. Si le type est de taille 8 ou moins (si la fonction ne retourne rien), alors, comme pour \texttt{compile\_expr}, la valeur de retour est placée dans \texttt{rax}. Sinon elle est placée sur la pile à la place anciennement occupée par les arguments. C'est toujours l'appellant qui dépile les arguments, s'il en reste sur la pile toutefois.
+Les conventions d'appel sont celles du sujet. Les conventions de retour dépendent de la taille des types en question. Si le type est de taille 8 ou moins (si la fonction ne retourne rien), alors, comme pour \texttt{compile\_expr}, la valeur de retour est placée dans \texttt{\%rax}. Sinon elle est placée sur la pile à la place anciennement occupée par les arguments. C'est toujours l'appellant qui dépile les arguments, s'il en reste sur la pile toutefois.
 
 Quand plusieurs valeurs sont retournées, alors la dernière est placée en dernière sur la pile. Ainsi, lors d'une composition, il n'y a rien à faire après le retour de la première fonction, les arguments sont déjà en place au sommet de la pile.
 
@@ -318,7 +320,7 @@ val prepare : int * [ `text ] asm ->
               int * [ `text ] asm
 \end{verbatim}
 
-qui pour une expression donnée avec son son type, l'évalue et la change si c'est nécessaire. Par exemple, le code produit pour les types booléens est le suivant :
+qui pour une expression donnée avec son type, l'évalue et la change si c'est nécessaire. Par exemple, le code produit pour les types booléens est le suivant :
 
 \begin{verbatim}
   code ++ compile_expr ce ++
@@ -329,9 +331,11 @@ qui pour une expression donnée avec son son type, l'évalue et la change si c'e
   label el
 \end{verbatim}
 
-Ainsi, on affiche bien \texttt{true} ou \texttt{false} et non la valeur entière de l'expression. Il y a un comportement similaire pour les pointeurs.
+Ainsi, on affiche bien \texttt{true} ou \texttt{false} et non la valeur entière de l'expression. Il y a un comportement similaire pour les références.
 
-\paragraph{Les opérateurs booléens sont bien paresseux} J'ai bien fait attention à ce détail. Pour m'assurer de ne pas l'oublier, j'ai ajouter le test \texttt{exec/lazy.go}.
+J'ai cru comprendre que sur certains système d'exploitation, il fallait lors d'un appel à une fonction de la \texttt{libc}, et donc à \texttt{printf}, que la position de la pile soit alignée. Je n'ai pas eu ce problème personnellement et n'ai donc pas pris la peine de le faire puisque ce n'était pas demandé.
+
+\paragraph{Les opérateurs booléens sont bien paresseux} J'ai bien fait attention à ce détail. Pour m'assurer de ne pas l'oublier, j'ai ajouté le test \texttt{exec/lazy.go}.
 
 \section{Quelques petite extentions du sujet\label{sec:ext}}
 
@@ -446,10 +450,12 @@ Encore une fois, on parle ici plus d'une \textit{preuve de concept} que d'une vr
 \item tester si on divise par zéro
 \end{enumerate}
 
-C'est quand même plus agréable d'avoir un message d'erreur qu'une vilaine erreur de segmentation. Bien sûr, une fois qu'on est assuré que le programme est correct, alors on peut désactiver ces sécurités en passant en \textit{wild mode}.
+C'est quand même plus agréable d'avoir un programme qui produit un message d'erreur compréhensible en cas de problème visible plutôt qu'une vilaine erreur de segmentation. Bien sûr, une fois qu'on est assuré que le programme est correct, alors on peut désactiver ces sécurités en passant en \textit{wild mode}.
 
-\section{Conclusion, suite du projet et améliorations possibles}
+\section{Conclusion et améliorations possibles}
 
-Mon typeur passe bien tous les tests. J'aurais aimé que le code soit moins long et plus simple par endroits mais j'en suis relativement satisfait. Bien que j'ai terminé le typage depuis une semaine environ, je n'ai pas encore commencé la production de code : préferant implémenter les fonctionnalitées décrites dans la section \ref{sec:ext}. Au regard de tout le travail à fournir pour la production de code, c'était sans doute une erreur. D'autant plus que ces deux extentions me semble, au final, assez peu pertinentes dans un projet de compilation (en tout cas pas aussi pertinente que l'utilisation efficace des registres et/ou d'un garbage collector). Cela dit, maintenant que c'est je ne pense pas qu'elles me poseront de difficultées particulières. Il faudra sans doute revoir les structures de données produites après le typage pour y ajouter des informations dont j'aurais besoin dans la production de code.
+La compilateur passe tous les tests. Je suis un peu déçu par le travail que j'ai rendu (je pense que ça s'est senti sur la fin du rapport). J'ai fait des choix dans mon implémentation du projet qui sont de mon point de vue très questionnables, bien qu'ils ne soient pas tout à fait déraisonnables pour autant. J'aurais aimé proposer quelque chose de plus abouti dans les extentions proposées (compilateur un peu plus optimisant, proposer une système de compilation des packages plus consistant avec Go ou encore implémenter toutes les sécurités). Je peux quand même dire que je suis content de l'avoir fait au moins une fois.
+
+Malgrés tout ça me semble décent : en définitive, il y presque tout ce qu'il faut pour avoir un bon petit langage. Aussi, la suite serait d'implémenter un compilateur de MoyenGo très optimisant en PetitGo (et ne pas oublier de recompiler le compilateur MoyenGo avec lui même pour avoir un compilateur optimisé).
 
 \end{document}
